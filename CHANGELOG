@@ -1,0 +1,47 @@
+# Changelog
+
+Tất cả thay đổi quan trọng của dự án này sẽ được ghi lại trong file này.
+
+## [1.0.0] - 2025-09-14
+### 🎉 Ra mắt phiên bản đầu tiên (Stable Release)
+
+#### ✨ Tính năng mới
+- **Hệ thống log bất đồng bộ** với channel buffer và worker xử lý song song.
+- **Hỗ trợ nhiều cấp độ log**: `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`.
+- **Context-first API**:
+  - Gắn metadata (`module`, `trace_id`, `flow_id`, `attrs`) vào `context.Context`.
+  - Lấy logger từ context qua `GetLogger`.
+- **Masking dữ liệu nhạy cảm**:
+  - Mask bằng regex (`RegexRules` / `RegexPatternMap`).
+  - Mask theo field JSON (`JSONFieldRules`).
+- **Batch processing**: gom nhiều log entry thành batch để giảm I/O.
+- **Hook**: chèn hàm xử lý tùy chỉnh trước/sau khi ghi log.
+- **Rotation**: xoay file log theo dung lượng hoặc thời gian.
+- **Dynamic config**: thay đổi cấu hình logger khi runtime (min level, masking rules, retry policy, hooks, batch config).
+- **OpenTelemetry integration**: tự động lấy `trace_id` từ OTel context nếu bật `EnableOTEL`.
+- **Adapter**:
+  - `SimpleLogger` interface (4 cấp độ cơ bản).
+  - `ExtendedLogger` interface (thêm `Fatal`).
+  - `Adapter` bọc `LoggerWithCtx` để triển khai các interface này.
+- **API khởi tạo**:
+  - `InitLogger` (cấu hình nhanh).
+  - `InitLoggerWithConfig` (cấu hình đầy đủ).
+  - `NewDetachedLogger` (logger tách biệt).
+- **Đóng logger an toàn**:
+  - `Close(timeout)` flush toàn bộ log, dừng worker, đóng writer.
+  - In thống kê lỗi writer khi shutdown.
+
+#### 🛠 Cải tiến
+- Tích hợp `compileMaskRegexes` vào luồng khởi tạo để tự động compile regex từ `RegexPatternMap`.
+- Gọi `formatWriterErrorStats` khi đóng logger để hiển thị thống kê lỗi writer.
+- Bổ sung kiểm tra nil writer trong `safeWrite` để tránh panic.
+- Tự động gán `os.Stdout`/`os.Stderr` nếu writer chính chưa được set.
+
+#### 📚 Tài liệu
+- Viết lại `doc.go` với ví dụ nâng cao bao quát toàn bộ tính năng.
+- Thêm README.md chi tiết với hướng dẫn cài đặt, sử dụng cơ bản và nâng cao.
+- Bổ sung ví dụ sử dụng logger qua context trong các hàm bên ngoài.
+
+---
+
+[1.0.0]: https://github.com/phuonguno98/unologger/releases/tag/v1.0.0
