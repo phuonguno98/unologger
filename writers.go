@@ -11,32 +11,40 @@ package unologger
 import (
 	"fmt"
 	"io"
-	"math/rand"
+	"sort"
 	"time"
 )
 
-// writeToAll ghi dữ liệu ra writer chính, rotationSink (nếu có) và tất cả writer phụ.
-// Áp dụng retry/backoff theo cấu hình retryPolicy.
-// Ghi nhận lỗi vào thống kê per-writer.
-//
-// Tham số:
-//   - p: dữ liệu log đã format.
-//   - isError: true nếu log thuộc cấp độ ERROR hoặc FATAL (ghi ra stderr), false nếu ngược lại.
+// writeToAll ghi buffer ra stdout/stderr (tùy isError), rotation và toàn bộ extra writers.
 func (l *Logger) writeToAll(p []byte, isError bool) {
+	// Snapshot outputs để không giữ khóa trong lúc I/O
+	l.outputsMu.RLock()
+	std := l.stdOut
+	errw := l.errOut
+	var rotName string
+	var rotWriter io.Writer
+	if l.rotationSink != nil && l.rotationSink.Writer != nil {
+		rotName = l.rotationSink.Name
+		rotWriter = l.rotationSink.Writer
+	}
+	extras := make([]writerSink, len(l.extraW))
+	copy(extras, l.extraW)
+	l.outputsMu.RUnlock()
+
 	// Writer chính
 	if isError {
-		l.safeWrite("stderr", l.errOut, p)
+		l.safeWrite("stderr", errw, p)
 	} else {
-		l.safeWrite("stdout", l.stdOut, p)
+		l.safeWrite("stdout", std, p)
 	}
 
 	// Writer rotation nội bộ (nếu có)
-	if l.rotationSink != nil && l.rotationSink.Writer != nil {
-		l.safeWrite(l.rotationSink.Name, l.rotationSink.Writer, p)
+	if rotWriter != nil {
+		l.safeWrite(rotName, rotWriter, p)
 	}
 
 	// Writer phụ
-	for _, sink := range l.extraW {
+	for _, sink := range extras {
 		l.safeWrite(sink.Name, sink.Writer, p)
 	}
 }
@@ -45,32 +53,47 @@ func (l *Logger) writeToAll(p []byte, isError bool) {
 // Nếu ghi thành công, thoát ngay. Nếu lỗi, thử lại theo retryPolicy.
 func (l *Logger) safeWrite(name string, w io.Writer, p []byte) {
 	if w == nil {
-		return // Không ghi nếu writer nil
+		return
+	}
+
+	// Snapshot retryPolicy an toàn
+	l.dynConfig.mu.RLock()
+	rp := l.retryPolicy
+	l.dynConfig.mu.RUnlock()
+
+	// Clamp cấu hình sai để luôn có ít nhất 1 lần ghi thử
+	maxRetries := rp.MaxRetries
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	delay := rp.Backoff
+	if delay < 0 {
+		delay = 0
 	}
 
 	var err error
-	delay := l.retryPolicy.Backoff
-	for attempt := 0; attempt <= l.retryPolicy.MaxRetries; attempt++ {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		_, err = w.Write(p)
 		if err == nil {
 			return
 		}
-		// Ghi nhận lỗi
 		l.writeErrCount.Add(1)
 		l.incWriterErr(name)
 
-		// Nếu không retry hoặc đã hết số lần retry
-		if attempt == l.retryPolicy.MaxRetries {
+		if attempt == maxRetries {
 			return
 		}
 
-		// Tính delay
 		sleep := delay
-		if l.retryPolicy.Exponential {
+		if rp.Exponential {
 			sleep = delay * (1 << attempt)
 		}
-		if l.retryPolicy.Jitter > 0 {
-			j := time.Duration(rand.Int63n(int64(l.retryPolicy.Jitter)))
+		if rp.Jitter > 0 {
+			n := time.Now().UnixNano()
+			if n < 0 {
+				n = -n
+			}
+			j := time.Duration(n % int64(rp.Jitter))
 			sleep += j
 		}
 		time.Sleep(sleep)
@@ -83,9 +106,11 @@ func (l *Logger) incWriterErr(name string) {
 	val.(*atomicI64).Add(1)
 }
 
-// closeAllWriters đóng rotationSink và tất cả writer phụ nếu chúng implement io.Closer.
-// Được gọi khi Close() hoặc CloseDetached().
+// closeAllWriters đóng rotation và extra writers nếu có io.Closer.
 func (l *Logger) closeAllWriters() {
+	l.outputsMu.Lock()
+	defer l.outputsMu.Unlock()
+
 	// rotationSink
 	if l.rotationSink != nil && l.rotationSink.Closer != nil {
 		if err := l.rotationSink.Closer.Close(); err != nil {
@@ -119,16 +144,22 @@ func (l *Logger) getWriterErrorStats() map[string]int64 {
 	return stats
 }
 
-// formatWriterErrorStats trả về chuỗi thống kê lỗi writer.
-// Ví dụ: "writer errors: stderr=2 stdout=0 rotation=1"
+// formatWriterErrorStats trả về chuỗi tóm tắt số lỗi theo writer, sắp xếp theo tên.
 func (l *Logger) formatWriterErrorStats() string {
 	stats := l.getWriterErrorStats()
 	if len(stats) == 0 {
 		return "no writer errors"
 	}
+	// Sắp xếp theo tên để ổn định
+	names := make([]string, 0, len(stats))
+	for name := range stats {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	s := "writer errors:"
-	for name, cnt := range stats {
-		s += fmt.Sprintf(" %s=%d", name, cnt)
+	for _, name := range names {
+		s += fmt.Sprintf(" %s=%d", name, stats[name])
 	}
 	return s
 }

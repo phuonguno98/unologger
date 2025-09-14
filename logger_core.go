@@ -33,22 +33,23 @@ func (l *Logger) Error(ctx context.Context, format string, args ...interface{}) 
 	l.log(ctx, ERROR, format, args...)
 }
 
-// Fatal ghi log cấp FATAL với context cho trước.
-// Hành vi mặc định: ghi log, cố gắng đóng logger trong 2 giây, sau đó thoát tiến trình với mã 1.
+// Fatal ghi log cấp FATAL, cố gắng Close trong 2s rồi thoát tiến trình.
 func (l *Logger) Fatal(ctx context.Context, format string, args ...interface{}) {
 	l.log(ctx, FATAL, format, args...)
-	_ = Close(2 * time.Second)
+	_ = CloseDetached(l, 2*time.Second)
 	os.Exit(1)
 }
 
-// WithContext tạo LoggerWithCtx từ Logger hiện tại và context cho trước.
+// WithContext trả về LoggerWithCtx mới gắn context cho Logger hiện tại.
 func (l *Logger) WithContext(ctx context.Context) LoggerWithCtx {
 	return LoggerWithCtx{l: l, ctx: ctx}
 }
 
-// GlobalLogger trả về logger toàn cục (fallback).
+// GlobalLogger trả về global logger (tự init mặc định nếu chưa khởi tạo).
 func GlobalLogger() *Logger {
 	ensureInit()
+	globalMu.RLock()
+	defer globalMu.RUnlock()
 	return globalLogger
 }
 

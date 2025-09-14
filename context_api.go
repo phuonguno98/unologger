@@ -15,36 +15,35 @@ import (
 	"time"
 )
 
-// WithLogger gắn một *Logger cụ thể vào context.
+// WithLogger gắn *Logger vào context và trả về context mới.
 func WithLogger(ctx context.Context, l *Logger) context.Context {
 	return context.WithValue(ctx, ctxLoggerKey{}, l)
 }
 
-// LoggerFromContext trả về *Logger đã gắn vào ctx (nếu có).
+// LoggerFromContext lấy *Logger đã gắn trong ctx (nếu có).
 func LoggerFromContext(ctx context.Context) (*Logger, bool) {
 	l, ok := ctx.Value(ctxLoggerKey{}).(*Logger)
 	return l, ok
 }
 
-// WithModule gắn tên module vào context và trả về LoggerWithCtx mới.
+// WithModule gắn module vào ctx và trả về LoggerWithCtx mới.
 func WithModule(ctx context.Context, module string) LoggerWithCtx {
 	ensureInit()
 	ctx = context.WithValue(ctx, ctxModuleKey, module)
 	return GetLogger(ctx)
 }
 
-// WithTraceID gắn trace_id vào context. Nếu đã có trace_id thì ghi đè.
+// WithTraceID gắn/ghi đè trace_id vào ctx.
 func WithTraceID(ctx context.Context, traceID string) context.Context {
 	return context.WithValue(ctx, ctxTraceIDKey, traceID)
 }
 
-// WithFlowID gắn flow_id vào context.
+// WithFlowID gắn flow_id vào ctx.
 func WithFlowID(ctx context.Context, flowID string) context.Context {
 	return context.WithValue(ctx, ctxFlowIDKey, flowID)
 }
 
-// WithAttrs gắn thêm các thuộc tính bổ sung vào context.
-// Nếu key trùng sẽ ghi đè giá trị mới.
+// WithAttrs gắn thêm attributes vào ctx; trùng key sẽ ghi đè.
 func WithAttrs(ctx context.Context, attrs map[string]string) context.Context {
 	if attrs == nil {
 		return ctx
@@ -60,13 +59,15 @@ func WithAttrs(ctx context.Context, attrs map[string]string) context.Context {
 	return context.WithValue(ctx, ctxAttrsKey, newMap)
 }
 
-// EnsureTraceIDCtx đảm bảo context có trace_id, nếu chưa có sẽ tự sinh mới.
-// Nếu globalLogger.enableOTEL=true và context có trace/span từ OpenTelemetry, sẽ ưu tiên dùng trace_id từ đó.
+// EnsureTraceIDCtx đảm bảo ctx có trace_id; ưu tiên lấy từ OpenTelemetry khi được bật.
 func EnsureTraceIDCtx(ctx context.Context) context.Context {
 	if id, ok := ctx.Value(ctxTraceIDKey).(string); ok && id != "" {
 		return ctx
 	}
-	if globalLogger != nil && globalLogger.enableOTEL {
+	globalMu.RLock()
+	l := globalLogger
+	globalMu.RUnlock()
+	if l != nil && l.enableOTEL.Load() {
 		if tid := extractOTELTraceID(ctx); tid != "" {
 			return context.WithValue(ctx, ctxTraceIDKey, tid)
 		}
@@ -90,15 +91,16 @@ func newUUID() string {
 		hex.EncodeToString(b[10:16])
 }
 
-// GetLogger trả về LoggerWithCtx từ context.
-// Nếu context chưa có Logger, sẽ dùng globalLogger mặc định.
+// GetLogger lấy LoggerWithCtx từ ctx; fallback global logger nếu chưa gắn.
 func GetLogger(ctx context.Context) LoggerWithCtx {
 	ensureInit()
 	var base *Logger
 	if l, ok := ctx.Value(ctxLoggerKey{}).(*Logger); ok && l != nil {
 		base = l
 	} else {
+		globalMu.RLock()
 		base = globalLogger
+		globalMu.RUnlock()
 	}
 	module, _ := ctx.Value(ctxModuleKey).(string)
 	if module == "" {
@@ -108,7 +110,7 @@ func GetLogger(ctx context.Context) LoggerWithCtx {
 	return LoggerWithCtx{l: base, ctx: ctx}
 }
 
-// Context trả về context từ LoggerWithCtx.
+// Context trả về context bên trong LoggerWithCtx.
 func (lw LoggerWithCtx) Context() context.Context {
 	return lw.ctx
 }
@@ -133,6 +135,6 @@ func (lw LoggerWithCtx) Error(format string, args ...interface{}) {
 
 func (lw LoggerWithCtx) Fatal(format string, args ...interface{}) {
 	lw.l.log(lw.ctx, FATAL, format, args...)
-	_ = Close(2 * time.Second)
+	_ = CloseDetached(lw.l, 2*time.Second)
 	os.Exit(1)
 }

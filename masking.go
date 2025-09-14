@@ -16,10 +16,7 @@ import (
 	"regexp"
 )
 
-// applyMasking áp dụng tất cả quy tắc masking cho message text hoặc JSON.
-// Nếu jsonMode=true, sẽ thử parse JSON và mask theo field-level trước, sau đó fallback regex.
-// Nếu jsonMode=false, chỉ áp dụng regex masking.
-// Lấy rules từ dynamic config hiện tại của Logger.
+// applyMasking áp dụng quy tắc masking cho message (text/JSON).
 func (l *Logger) applyMasking(msg string, jsonMode bool) string {
 	l.dynConfig.mu.RLock()
 	regexRules := l.dynConfig.RegexRules
@@ -124,8 +121,7 @@ func getMaskReplacementForKeyWithRules(key string, rules []MaskFieldRule) string
 	return "***"
 }
 
-// compileMaskRegexes tiện ích để compile pattern string thành regexp.
-// Trả về slice MaskRuleRegex đã compile thành công.
+// compileMaskRegexes biên dịch các pattern string thành danh sách quy tắc regex.
 func compileMaskRegexes(patterns map[string]string) []MaskRuleRegex {
 	var rules []MaskRuleRegex
 	for pat, repl := range patterns {

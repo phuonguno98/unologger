@@ -13,20 +13,15 @@ import (
 	"time"
 )
 
-// Stats trả về thống kê của global logger:
-//   - dropped: số log bị drop ở enqueue
-//   - written: số log đã xử lý thành công
-//   - batches: số batch đã flush
-//   - writeErrs: tổng số lỗi ghi
-//   - hookErrs: tổng số lỗi hook
-//   - queueLen: số phần tử còn lại trong hàng đợi
-//   - writerErrs: map tên writer -> số lỗi ghi
-//   - hookErrLog: slice lỗi hook chi tiết (nếu có)
+// Stats trả về thống kê của global logger: dropped, written, batches, writeErrs,
+// hookErrs, queueLen, writerErrs và hookErrLog.
 func Stats() (dropped, written, batches, writeErrs, hookErrs int64, queueLen int, writerErrs map[string]int64, hookErrLog []HookError) {
-	if globalLogger == nil {
+	globalMu.RLock()
+	l := globalLogger
+	globalMu.RUnlock()
+	if l == nil {
 		return 0, 0, 0, 0, 0, 0, nil, nil
 	}
-	l := globalLogger
 	return l.droppedCount.Load(),
 		l.writtenCount.Load(),
 		l.batchCount.Load(),
@@ -37,7 +32,7 @@ func Stats() (dropped, written, batches, writeErrs, hookErrs int64, queueLen int
 		l.getHookErrorLog()
 }
 
-// StatsDetached trả về thống kê của một logger riêng (detached logger).
+// StatsDetached trả về thống kê của một logger riêng (detached).
 func StatsDetached(l *Logger) (dropped, written, batches, writeErrs, hookErrs int64, queueLen int, writerErrs map[string]int64, hookErrLog []HookError) {
 	if l == nil {
 		return 0, 0, 0, 0, 0, 0, nil, nil
@@ -52,18 +47,21 @@ func StatsDetached(l *Logger) (dropped, written, batches, writeErrs, hookErrs in
 		l.getHookErrorLog()
 }
 
-// Close đóng global logger: ngừng nhận log mới, flush batch, dừng worker, dừng hooks, đóng writers.
+// Close đóng global logger: chặn log mới, chờ worker, dừng hooks, đóng writers.
 // timeout: thời gian tối đa chờ tất cả hoàn tất; <=0 nghĩa là chờ vô hạn.
 // Idempotent: gọi nhiều lần không lỗi.
 // Trả về lỗi nếu hết thời gian chờ mà chưa đóng xong.
 func Close(timeout time.Duration) error {
-	if globalLogger == nil || globalLogger.closed.IsTrue() {
+	globalMu.RLock()
+	l := globalLogger
+	globalMu.RUnlock()
+	if l == nil || l.closed.IsTrue() {
 		return nil
 	}
-	return closeLogger(globalLogger, timeout)
+	return closeLogger(l, timeout)
 }
 
-// CloseDetached đóng một logger riêng (detached logger).
+// CloseDetached đóng logger riêng với quy trình tương tự Close.
 func CloseDetached(l *Logger, timeout time.Duration) error {
 	if l == nil || l.closed.IsTrue() {
 		return nil
@@ -73,35 +71,38 @@ func CloseDetached(l *Logger, timeout time.Duration) error {
 
 // closeLogger thực hiện đóng logger chung cho cả global và detached.
 func closeLogger(l *Logger, timeout time.Duration) error {
-	l.closed.SetTrue()
+	// NEW: chỉ cho phép đóng một lần (tránh panic: close of closed channel)
+	if !l.closed.TrySetTrue() {
+		return nil
+	}
 	close(l.ch) // báo worker pipeline dừng
 
-	// Đóng hook runner nếu async
-	l.closeHookRunner()
-
-	// Đợi worker pipeline kết thúc
 	done := make(chan struct{})
 	go func() {
 		l.wg.Wait()
 		close(done)
 	}()
 
-	// Đóng writer phụ và rotationSink
-	l.closeAllWriters()
-
-	// In thống kê lỗi writer nếu có
-	statsStr := l.formatWriterErrorStats()
-	if statsStr != "no writer errors" {
-		// Ghi ra stderr để dễ thấy
-		_, _ = fmt.Fprintln(os.Stderr, statsStr)
-	}
-
 	if timeout <= 0 {
 		<-done
+		// Worker đã dừng, giờ mới đóng hook runner và writers
+		l.closeHookRunner()
+		l.closeAllWriters()
+		statsStr := l.formatWriterErrorStats()
+		if statsStr != "no writer errors" {
+			_, _ = fmt.Fprintln(os.Stderr, statsStr)
+		}
 		return nil
 	}
+
 	select {
 	case <-done:
+		l.closeHookRunner()
+		l.closeAllWriters()
+		statsStr := l.formatWriterErrorStats()
+		if statsStr != "no writer errors" {
+			_, _ = fmt.Fprintln(os.Stderr, statsStr)
+		}
 		return nil
 	case <-time.After(timeout):
 		return fmt.Errorf("logger: close timeout after %s", timeout)

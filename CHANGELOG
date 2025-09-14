@@ -2,6 +2,38 @@
 
 Tất cả thay đổi quan trọng của dự án này sẽ được ghi lại trong file này.
 
+## [1.1.0] - 2025-09-15
+### 🚀 Nâng cấp & tính năng
+- Atomic batch config: thêm `batchSizeA`, `batchWaitA` để cập nhật batch-size/max-wait theo thời gian thực qua `SetBatchConfig` (không cần khởi động lại worker).
+- JSON mode an toàn: thêm `jsonFmtFlag` (atomic) và cập nhật `SetJSONFormat` dùng cờ atomic.
+- Hook runner có thể khởi động lại sau khi đóng: `closeHookRunner` đặt `hookQueueCh = nil` để cho phép `SetHooks` bật lại khi runtime.
+- Bảo vệ global logger: truy cập `globalLogger` đồng bộ bằng `globalMu (RWMutex)`; `ensureInit` dùng `sync.Once` + kiểm tra an toàn.
+- Snapshot outputs khi ghi: `writeToAll` chụp `stdout/stderr/rotation/extras` dưới khóa đọc rồi ghi ngoài khóa, giảm độ tranh chấp.
+- API không thay đổi; tương thích ngược với 1.0.0.
+
+### 🐛 Sửa lỗi
+- Tránh double-close: `atomicBool.TrySetTrue()` bảo vệ `closeLogger` khỏi đóng channel nhiều lần.
+- DropOldest thu hồi log bị drop: khi hàng đợi đầy và `DropOldest=true`, entry bị loại bỏ sẽ được trả về pool và tăng `droppedCount`.
+- Đọc retry policy an toàn: `safeWrite` snapshot `retryPolicy` dưới khóa, đồng thời clamp `MaxRetries>=0`, `Backoff>=0`.
+- Khắc phục race tiềm ẩn:
+  - Đọc `globalLogger` trong `GetLogger/Stats/Close` dùng `globalMu.RLock`.
+  - Đổi timezone an toàn với `locMu`.
+  - Bật/tắt OTel/JSON mode dùng atomic flags.
+
+### ⚡ Hiệu năng & an toàn cạnh tranh
+- Giảm lock contention khi I/O bằng snapshot outputs.
+- Worker tự động đọc cấu hình batch mới (atomic), timer reset theo giá trị mới.
+- Idempotent close: an toàn khi gọi `Close/CloseDetached` nhiều lần hoặc song song.
+
+### 📚 Tài liệu & ví dụ
+- Viết lại GoDoc, chuẩn hóa comment cho toàn bộ API export.
+- Cập nhật README với hướng dẫn Quick Start, động cấu hình, hooks, masking, rotation, OTel, Stats/Close.
+- Ví dụ đầy đủ tại `example/main.go`, bao phủ hầu hết API (không gọi Fatal trừ khi bật `DEMO_FATAL=1`).
+
+### 🧩 Khác
+- Không có thay đổi phá vỡ (breaking changes).
+- Yêu cầu Go tối thiểu vẫn là 1.25.
+
 ## [1.0.0] - 2025-09-14
 ### 🎉 Ra mắt phiên bản đầu tiên (Stable Release)
 
@@ -44,4 +76,5 @@ Tất cả thay đổi quan trọng của dự án này sẽ được ghi lại 
 
 ---
 
+[1.1.0]: https://github.com/phuonguno98/unologger/releases/tag/v1.1.0
 [1.0.0]: https://github.com/phuonguno98/unologger/releases/tag/v1.0.0

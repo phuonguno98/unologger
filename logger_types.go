@@ -13,6 +13,7 @@ import (
 	"io"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -184,22 +185,31 @@ type writerSink struct {
 	Closer io.Closer
 }
 
-// Logger quản lý toàn bộ pipeline ghi log.
+// Logger quản lý toàn bộ pipeline ghi log, hooks, masking, outputs và thống kê.
 type Logger struct {
 	// Outputs
-	stdOut  io.Writer
-	errOut  io.Writer
-	extraW  []writerSink
-	loc     *time.Location
-	jsonFmt bool
+	stdOut io.Writer
+	errOut io.Writer
+	extraW []writerSink
+	loc    *time.Location
+	// Bật/tắt JSON: dùng atomic để tránh race khi runtime
+	jsonFmt     bool       // legacy, giữ để tương thích nội bộ
+	jsonFmtFlag atomicBool // NEW: cờ atomic, thay cho jsonFmt khi đọc/ghi runtime
+	// NEW: guard dynamic output changes
+	outputsMu sync.RWMutex
+	// NEW: guard timezone location read/write
+	locMu sync.RWMutex
 
 	// Pipeline
 	ch          chan *logEntry
 	workers     int
 	nonBlocking bool
 	dropOldest  bool
-	batchSize   int
-	batchWait   time.Duration
+	batchSize   int           // legacy
+	batchWait   time.Duration // legacy
+	// NEW: atomic batch config để tránh race khi runtime
+	batchSizeA atomicI64
+	batchWaitA atomicI64 // đơn vị: nanoseconds
 
 	// Policies
 	retryPolicy RetryPolicy
@@ -218,9 +228,12 @@ type Logger struct {
 	hookWg      sync.WaitGroup
 	hookErrLog  []HookError
 	hookErrMu   sync.Mutex
+	// NEW: bảo vệ truy cập l.hooks
+	hooksMu    sync.RWMutex
+	hookErrMax int
 
 	// OTEL interop
-	enableOTEL bool
+	enableOTEL atomicBool
 
 	// Rotation
 	rotation     RotationConfig
@@ -243,7 +256,7 @@ type Logger struct {
 	dynConfig DynamicConfig
 }
 
-// LoggerWithCtx là wrapper chứa *Logger và context.
+// LoggerWithCtx là wrapper chứa *Logger và context để ghi log kèm metadata.
 type LoggerWithCtx struct {
 	l   *Logger
 	ctx context.Context
@@ -268,7 +281,7 @@ type logBatch struct {
 // ===== Cấu hình động (runtime) =====
 //
 
-// DynamicConfig cho phép thay đổi cấu hình khi runtime (được bảo vệ bằng mutex).
+// DynamicConfig cho phép thay đổi cấu hình logger khi runtime (được bảo vệ bằng mutex).
 type DynamicConfig struct {
 	mu             sync.RWMutex
 	MinLevel       Level           // Cấp độ log tối thiểu hiện tại
@@ -288,25 +301,30 @@ type atomicBool struct{ v uint32 }
 type atomicI64 struct{ v int64 }
 
 // Load/Store cho atomicLevel.
-func (a *atomicLevel) Load() int32     { return a.v }
-func (a *atomicLevel) Store(val int32) { a.v = val }
+func (a *atomicLevel) Load() int32     { return atomic.LoadInt32(&a.v) }
+func (a *atomicLevel) Store(val int32) { atomic.StoreInt32(&a.v, val) }
 
 // Load/Store/SetTrue/IsTrue cho atomicBool.
-func (a *atomicBool) Load() bool { return a.v != 0 }
+func (a *atomicBool) Load() bool { return atomic.LoadUint32(&a.v) != 0 }
 func (a *atomicBool) Store(val bool) {
 	if val {
-		a.v = 1
+		atomic.StoreUint32(&a.v, 1)
 	} else {
-		a.v = 0
+		atomic.StoreUint32(&a.v, 0)
 	}
 }
-func (a *atomicBool) SetTrue()     { a.v = 1 }
-func (a *atomicBool) IsTrue() bool { return a.v != 0 }
+func (a *atomicBool) SetTrue()     { atomic.StoreUint32(&a.v, 1) }
+func (a *atomicBool) IsTrue() bool { return atomic.LoadUint32(&a.v) != 0 }
+
+// NEW: TrySetTrue đặt true nếu hiện tại đang là false, trả về true nếu thành công.
+func (a *atomicBool) TrySetTrue() bool {
+	return atomic.CompareAndSwapUint32(&a.v, 0, 1)
+}
 
 // Add/Load/Store cho atomicI64.
-func (a *atomicI64) Add(delta int64) { a.v += delta }
-func (a *atomicI64) Load() int64     { return a.v }
-func (a *atomicI64) Store(val int64) { a.v = val }
+func (a *atomicI64) Add(delta int64) { atomic.AddInt64(&a.v, delta) }
+func (a *atomicI64) Load() int64     { return atomic.LoadInt64(&a.v) }
+func (a *atomicI64) Store(val int64) { atomic.StoreInt64(&a.v, val) }
 
 //
 // ===== Pool nội bộ để giảm GC =====
@@ -328,3 +346,9 @@ var poolBatch = sync.Pool{
 
 // globalLogger là logger mặc định (nếu được init).
 var globalLogger *Logger
+
+// globalMu bảo vệ mọi thao tác đọc/ghi globalLogger để tránh race.
+var globalMu sync.RWMutex
+
+// NEW: giới hạn mặc định số bản ghi lỗi hook giữ lại
+const defaultHookErrMax = 1000

@@ -24,8 +24,13 @@ func (l *Logger) enqueue(e *logEntry) {
 		case l.ch <- e:
 		default:
 			if l.dropOldest {
+				// NEW: lấy ra một entry cũ (nếu có), tăng droppedCount và trả về pool
 				select {
-				case <-l.ch:
+				case old := <-l.ch:
+					if old != nil {
+						l.droppedCount.Add(1)
+						poolEntry.Put(old)
+					}
 				default:
 				}
 				select {
@@ -44,7 +49,7 @@ func (l *Logger) enqueue(e *logEntry) {
 	}
 }
 
-// workerLoop đọc từ channel và gom batch để xử lý.
+// workerLoop tiêu thụ channel log và gom batch để xử lý/ghi.
 func (l *Logger) workerLoop() {
 	defer l.wg.Done()
 
@@ -61,7 +66,12 @@ func (l *Logger) workerLoop() {
 		}
 	}
 
-	timer := time.NewTimer(l.batchWait)
+	// Đọc batchWait lần đầu
+	wait := time.Duration(l.batchWaitA.Load())
+	if wait <= 0 {
+		wait = time.Second
+	}
+	timer := time.NewTimer(wait)
 	defer timer.Stop()
 
 	for {
@@ -74,51 +84,88 @@ func (l *Logger) workerLoop() {
 				return
 			}
 			batch.items = append(batch.items, e)
-			if len(batch.items) >= l.batchSize {
+
+			size := int(l.batchSizeA.Load())
+			if size <= 0 {
+				size = 1
+			}
+			if len(batch.items) >= size {
 				flush()
 				if !timer.Stop() {
 					<-timer.C
 				}
-				timer.Reset(l.batchWait)
+				wait = time.Duration(l.batchWaitA.Load())
+				if wait <= 0 {
+					wait = time.Second
+				}
+				timer.Reset(wait)
 			}
 		case <-timer.C:
 			flush()
-			timer.Reset(l.batchWait)
+			wait = time.Duration(l.batchWaitA.Load())
+			if wait <= 0 {
+				wait = time.Second
+			}
+			timer.Reset(wait)
 		}
 	}
 }
 
-// processBatch xử lý một batch logEntry.
+// processBatch xử lý một batch logEntry, hỗ trợ JSON/text và route stderr cho lỗi.
 func (l *Logger) processBatch(entries []*logEntry) {
-	if l.jsonFmt {
-		// Tối ưu batch JSON: encode từng log và ghi một lần
-		buf := make([][]byte, 0, len(entries))
+	if l.jsonFmtFlag.Load() { // NEW: dùng cờ atomic
+		// Encode từng entry và tách theo isError để route đúng stderr/stdout
+		bufStd := make([][]byte, 0, len(entries))
+		bufErr := make([][]byte, 0, len(entries))
 		for _, e := range entries {
-			buf = append(buf, l.formatJSONEntry(e))
-			poolEntry.Put(e)
+			b := l.formatJSONEntry(e)
+			if e.lvl >= ERROR {
+				bufErr = append(bufErr, b)
+			} else {
+				bufStd = append(bufStd, b)
+			}
+			l.recycleEntry(e)
 		}
-		// Ghép tất cả vào một slice byte duy nhất
-		totalLen := 0
-		for _, b := range buf {
-			totalLen += len(b)
+
+		if len(bufStd) > 0 {
+			total := 0
+			for _, b := range bufStd {
+				total += len(b)
+			}
+			out := make([]byte, 0, total)
+			for _, b := range bufStd {
+				out = append(out, b...)
+			}
+			l.writeToAll(out, false)
 		}
-		out := make([]byte, 0, totalLen)
-		for _, b := range buf {
-			out = append(out, b...)
+
+		if len(bufErr) > 0 {
+			total := 0
+			for _, b := range bufErr {
+				total += len(b)
+			}
+			out := make([]byte, 0, total)
+			for _, b := range bufErr {
+				out = append(out, b...)
+			}
+			l.writeToAll(out, true)
 		}
-		// Với JSON, không phân biệt error writer
-		l.writeToAll(out, false)
 	} else {
 		for _, e := range entries {
 			l.processTextEntry(e)
-			poolEntry.Put(e)
+			l.recycleEntry(e)
 		}
 	}
 }
 
-// processTextEntry format, mask, gọi hooks, và ghi ra output text.
+// processTextEntry format, mask, gửi hook và ghi ra output text.
 func (l *Logger) processTextEntry(e *logEntry) {
 	l.writtenCount.Add(1)
+
+	// Đọc location an toàn
+	l.locMu.RLock()
+	loc := l.loc
+	l.locMu.RUnlock()
 
 	module, _ := e.ctx.Value(ctxModuleKey).(string)
 	traceID, _ := e.ctx.Value(ctxTraceIDKey).(string)
@@ -129,7 +176,7 @@ func (l *Logger) processTextEntry(e *logEntry) {
 	msg = l.applyMasking(msg, false)
 
 	hookEv := HookEvent{
-		Time:     e.t.In(l.loc),
+		Time:     e.t.In(loc),
 		Level:    e.lvl,
 		Module:   module,
 		Message:  msg,
@@ -142,9 +189,9 @@ func (l *Logger) processTextEntry(e *logEntry) {
 
 	// ERROR và FATAL đều ghi ra stderr
 	isErr := e.lvl >= ERROR
-	ts := e.t.In(l.loc).Format("2006-01-02 15:04:05.000 MST")
+	ts := e.t.In(loc).Format("2006-01-02 15:04:05.000 MST")
 	meta := ""
-	if l.enableOTEL {
+	if l.enableOTEL.Load() {
 		if tsid := formatTraceSpanID(e.ctx); tsid != "" {
 			meta += fmt.Sprintf(" trace/span=%s", tsid)
 		}
@@ -162,9 +209,14 @@ func (l *Logger) processTextEntry(e *logEntry) {
 	l.writeToAll([]byte(line), isErr)
 }
 
-// formatJSONEntry format, mask, gọi hooks, và trả về []byte JSON đã encode.
+// formatJSONEntry format, mask, gửi hook và trả về JSON-encoded bytes (có newline).
 func (l *Logger) formatJSONEntry(e *logEntry) []byte {
 	l.writtenCount.Add(1)
+
+	// Đọc location an toàn
+	l.locMu.RLock()
+	loc := l.loc
+	l.locMu.RUnlock()
 
 	module, _ := e.ctx.Value(ctxModuleKey).(string)
 	traceID, _ := e.ctx.Value(ctxTraceIDKey).(string)
@@ -175,7 +227,7 @@ func (l *Logger) formatJSONEntry(e *logEntry) []byte {
 	msg = l.applyMasking(msg, true)
 
 	hookEv := HookEvent{
-		Time:     e.t.In(l.loc),
+		Time:     e.t.In(loc),
 		Level:    e.lvl,
 		Module:   module,
 		Message:  msg,
@@ -199,13 +251,13 @@ func (l *Logger) formatJSONEntry(e *logEntry) []byte {
 	}
 
 	entry := jsonEntry{
-		Time:    e.t.In(l.loc).Format(time.RFC3339Nano),
+		Time:    e.t.In(loc).Format(time.RFC3339Nano),
 		Level:   e.lvl.String(),
 		Module:  module,
 		Message: msg,
 	}
 
-	if l.enableOTEL {
+	if l.enableOTEL.Load() {
 		if tsid := formatTraceSpanID(e.ctx); tsid != "" {
 			entry.TraceSpan = tsid
 		}
@@ -223,4 +275,14 @@ func (l *Logger) formatJSONEntry(e *logEntry) []byte {
 	b, _ := json.Marshal(entry)
 	b = append(b, '\n')
 	return b
+}
+
+// recycleEntry làm sạch tham chiếu trong logEntry trước khi trả về pool.
+func (l *Logger) recycleEntry(e *logEntry) {
+	// xóa tham chiếu lớn/nhạy cảm trước khi Put
+	e.ctx = nil
+	e.args = nil
+	e.tmpl = ""
+	// các trường còn lại là kiểu giá trị nhỏ
+	poolEntry.Put(e)
 }

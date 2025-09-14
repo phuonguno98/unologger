@@ -4,112 +4,163 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"time"
+
+	"go.opentelemetry.io/otel"
 
 	"github.com/phuonguno98/unologger"
 )
 
-// Hàm bên ngoài 1: chỉ cần SimpleLogger
-func doSomethingBasic(log unologger.SimpleLogger) {
-	log.Info("Gọi từ package bên ngoài (SimpleLogger)")
-	log.Warn("Cảnh báo từ package bên ngoài")
+// hookPrint in sự kiện hook ra stdout
+func hookPrint(ev unologger.HookEvent) error {
+	fmt.Printf("[HOOK] json=%v %s %s: %s\n", ev.JSONMode, ev.Level, ev.Module, ev.Message)
+	return nil
 }
 
-// Hàm bên ngoài 2: cần ExtendedLogger (có Fatal)
-func doSomethingCritical(log unologger.ExtendedLogger) {
-	log.Error("Lỗi nghiêm trọng từ package bên ngoài")
-	// log.Fatal("Fatal từ package bên ngoài - sẽ dừng chương trình")
-}
-
-// Hàm bên ngoài 3: nhận logger qua context
-func processPayment(ctx context.Context, orderID int) {
-	log := unologger.GetLogger(ctx)
-	log.Info("Bắt đầu xử lý thanh toán cho đơn hàng %d", orderID)
-	ctx = unologger.WithAttrs(ctx, map[string]string{"order_id": fmt.Sprint(orderID)})
-	log = unologger.GetLogger(ctx)
-	log.Debug("Đã gắn thêm order_id vào context")
-}
-
-func sendEmail(ctx context.Context, to string) {
-	ctx = unologger.WithModule(ctx, "email-service").Context()
-	log := unologger.GetLogger(ctx)
-	log.Info("Gửi email tới %s", to)
+// hookSlow giả lập xử lý chậm để minh họa timeout
+func hookSlow(_ unologger.HookEvent) error {
+	time.Sleep(300 * time.Millisecond)
+	return nil
 }
 
 func main() {
-	// 1. Cấu hình logger đầy đủ
+	// 1) Cấu hình logger ban đầu (đầy đủ tính năng phổ biến)
 	cfg := unologger.Config{
-		MinLevel: unologger.DEBUG,
-		Timezone: "Asia/Ho_Chi_Minh",
-		JSON:     false,
-		Buffer:   1024,
-		Workers:  2,
-		Batch:    unologger.BatchConfig{Size: 5, MaxWait: 500 * time.Millisecond},
-		Retry:    unologger.RetryPolicy{MaxRetries: 2, Backoff: 100 * time.Millisecond, Exponential: true},
+		MinLevel:    unologger.DEBUG,
+		Timezone:    "Asia/Ho_Chi_Minh",
+		JSON:        false,
+		Buffer:      1024,
+		Workers:     2,
+		NonBlocking: true,
+		DropOldest:  true,
+		Batch:       unologger.BatchConfig{Size: 5, MaxWait: 400 * time.Millisecond},
+		Retry:       unologger.RetryPolicy{MaxRetries: 2, Backoff: 80 * time.Millisecond, Exponential: true, Jitter: 20 * time.Millisecond},
 		Rotation: unologger.RotationConfig{
 			Enable:     true,
 			Filename:   "app.log",
-			MaxSizeMB:  10,
-			MaxBackups: 3,
+			MaxSizeMB:  5,
+			MaxBackups: 2,
 			MaxAge:     7,
 			Compress:   true,
 		},
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
 		RegexPatternMap: map[string]string{
-			`\b\d{16}\b`: "****MASKED_CARD****",
+			`\b\d{16}\b`:                                       "****MASKED_CARD****",
+			`(?i)authorization:\s*Bearer\s+\S+`:                "authorization: Bearer ****MASKED****",
+			`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`: "***@masked.email",
 		},
-		Hooks: []unologger.HookFunc{
-			func(ev unologger.HookEvent) error {
-				fmt.Printf("[HOOK] %s %s: %s\n", ev.Level, ev.Module, ev.Message)
-				return nil
-			},
+		JSONFieldRules: []unologger.MaskFieldRule{
+			{Keys: []string{"password", "token", "secret"}, Replacement: "****"},
 		},
-		EnableOTEL: false,
+		Hooks:      []unologger.HookFunc{hookPrint, hookSlow},
+		Hook:       unologger.HookConfig{Async: true, Workers: 2, Queue: 1024, Timeout: 200 * time.Millisecond},
+		EnableOTEL: false, // sẽ bật sau để demo
 	}
-
-	// 2. Khởi tạo logger toàn cục
 	unologger.InitLoggerWithConfig(cfg)
+	defer func() {
+		if err := unologger.Close(2 * time.Second); err != nil {
+			fmt.Println("Close timeout:", err)
+		}
+	}()
 
-	// 3. Tạo context với metadata
+	// 2) Ngữ cảnh ban đầu và LoggerWithCtx
 	ctx := context.Background()
 	ctx = unologger.WithModule(ctx, "main-service").Context()
-	ctx = unologger.WithTraceID(ctx, "trace-xyz")
 	ctx = unologger.WithFlowID(ctx, "flow-001")
 	ctx = unologger.WithAttrs(ctx, map[string]string{"user_id": "u001"})
-
-	// 4. Lấy logger từ context
+	ctx = unologger.EnsureTraceIDCtx(ctx)
 	log := unologger.GetLogger(ctx)
 
-	// 5. Ghi log các cấp độ
+	// 3) Ghi log các cấp độ và masking text
 	log.Debug("Bắt đầu xử lý thanh toán cho user %s", "u001")
 	log.Info("Thanh toán thành công cho đơn hàng %d", 1001)
 	log.Warn("Số dư tài khoản thấp cho user %s", "u001")
 	log.Error("Lỗi kết nối tới ngân hàng")
+	log.Info("Thử mask thẻ: 1234567812345678 và email: user@example.com")
+	log.Info("Header authorization: Bearer very-secret-token-abcxyz")
 
-	// 6. Log có dữ liệu nhạy cảm sẽ bị mask
-	log.Info("Số thẻ: 1234567812345678")
-
-	// 7. Dùng Adapter để truyền logger vào package bên ngoài
+	// 4) Adapter cho package bên ngoài
 	adapter := unologger.NewAdapter(log)
-	doSomethingBasic(adapter)    // SimpleLogger
-	doSomethingCritical(adapter) // ExtendedLogger
+	doExternal(adapter)
 
-	// 8. Gọi hàm bên ngoài nhận logger qua context
-	processPayment(ctx, 1002)
-	sendEmail(ctx, "user@example.com")
-
-	// 9. Thay đổi cấu hình động khi runtime
-	log.Info("Thay đổi cấp độ log tối thiểu thành WARN")
+	// 5) Cấu hình động: min-level và batch
 	unologger.GlobalLogger().SetMinLevel(unologger.WARN)
-	log.Debug("Log này sẽ bị bỏ qua vì cấp độ < WARN")
-	log.Warn("Log này sẽ được ghi vì >= WARN")
+	log.Debug("Log này sẽ bị bỏ qua (DEBUG < WARN)")
+	log.Warn("Log này sẽ được ghi (>= WARN)")
+	unologger.GlobalLogger().SetBatchConfig(unologger.BatchConfig{Size: 3, MaxWait: 200 * time.Millisecond})
 
-	// 10. Đóng logger và in thống kê lỗi writer
-	if err := unologger.Close(2 * time.Second); err != nil {
-		fmt.Println("Đóng logger bị timeout:", err)
+	// 6) Thêm writer phụ và đổi outputs
+	tmpFile, _ := os.CreateTemp("", "extra-log-*.log")
+	unologger.GlobalLogger().AddExtraWriter("tempfile", tmpFile)
+	memBuf := &bytes.Buffer{}
+	unologger.GlobalLogger().SetOutputs(nil, nil, []io.Writer{memBuf}, []string{"mem-buf"})
+	log.Info("Ghi song song: stdout/stderr, rotation, tempfile và mem-buf")
+
+	// 7) Cập nhật hooks khi runtime
+	unologger.GlobalLogger().SetHooks([]unologger.HookFunc{
+		func(ev unologger.HookEvent) error {
+			fmt.Printf("[HOOK2] json=%v %s %s: %s\n", ev.JSONMode, ev.Level, ev.Module, ev.Message)
+			return fmt.Errorf("demo hook error")
+		},
+	})
+
+	// 8) Bật JSON mode và masking field-level JSON
+	unologger.GlobalLogger().SetJSONFormat(true)
+	log.Info(`{"event":"login","user":"u001","password":"123456","token":"abcdef"}`)
+
+	// 9) Đổi timezone và bật OTEL
+	if err := unologger.GlobalLogger().SetTimezone("UTC"); err != nil {
+		fmt.Println("Đổi timezone lỗi:", err)
 	}
+	unologger.GlobalLogger().SetEnableOTEL(true)
+
+	// 10) Gắn trace/span từ OTel và ghi log
+	ctxOT, span := otel.Tracer("demo-tracer").Start(ctx, "demo-operation")
+	unologger.GetLogger(ctxOT).Info("Log kèm trace/span từ OTel")
+	span.End()
+
+	// 11) Reinit toàn cục (đổi JSON, worker, min-level)
+	cfg2 := cfg
+	cfg2.JSON = true
+	cfg2.Workers = 1
+	cfg2.MinLevel = unologger.INFO
+	if _, err := unologger.ReinitGlobalLogger(cfg2, 2*time.Second); err != nil {
+		fmt.Println("Reinit logger lỗi:", err)
+	}
+	unologger.GetLogger(ctx).Info("Log sau ReinitGlobalLogger (JSON mode)")
+
+	// 12) Loại bỏ writer phụ và đóng tệp tạm
+	unologger.GlobalLogger().RemoveExtraWriter("tempfile")
+	if tmpFile != nil {
+		_ = tmpFile.Close()
+	}
+
+	// 13) In thống kê
+	dropped, written, batches, werrs, herrs, qlen, wstats, hookErrLog := unologger.Stats()
+	fmt.Printf("Stats: dropped=%d written=%d batches=%d writeErrs=%d hookErrs=%d queue=%d writers=%v hookErrLog=%d\n",
+		dropped, written, batches, werrs, herrs, qlen, wstats, len(hookErrLog))
+
+	// 14) Ghi thêm vài log để thấy batch flush
+	for i := 0; i < 5; i++ {
+		unologger.GetLogger(ctx).Info("Batch log %d", i+1)
+	}
+	time.Sleep(600 * time.Millisecond)
+
+	// 15) (Tùy chọn) Gọi Fatal để minh họa hành vi thoát chương trình
+	if os.Getenv("DEMO_FATAL") == "1" {
+		unologger.GetLogger(ctx).Fatal("Demo FATAL: ứng dụng sẽ thoát")
+	}
+}
+
+func doExternal(adapter *unologger.Adapter) {
+	adapter.Info("Gọi từ package bên ngoài (SimpleLogger)")
+	adapter.Warn("Cảnh báo từ package bên ngoài")
+	adapter.Error("Lỗi từ package bên ngoài")
+	// Tránh gọi Fatal trong ví dụ trừ khi được bật bằng biến môi trường
 }

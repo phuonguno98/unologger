@@ -14,15 +14,8 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-// initRotationWriter khởi tạo writer xoay file nội bộ nếu RotationConfig.Enable=true.
-// Nếu không bật rotation hoặc thiếu Filename, trả về nil.
-// Sử dụng lumberjack.Logger để xoay file theo dung lượng/thời gian/backups.
-//
-// Tham số:
-//   - cfg: RotationConfig chứa thông tin cấu hình xoay file.
-//
-// Trả về:
-//   - io.Writer: writer đã cấu hình rotation, hoặc nil nếu không bật rotation.
+// initRotationWriter tạo writer xoay file nếu cfg.Enable và cfg.Filename hợp lệ.
+// Trả về nil nếu rotation không bật hoặc thiếu đường dẫn file.
 func initRotationWriter(cfg RotationConfig) io.Writer {
 	if !cfg.Enable || cfg.Filename == "" {
 		return nil
