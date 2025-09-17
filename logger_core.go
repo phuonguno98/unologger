@@ -35,7 +35,7 @@ func (l *Logger) Error(ctx context.Context, format string, args ...interface{}) 
 
 // Fatal ghi log cấp FATAL, cố gắng Close trong 2s rồi thoát tiến trình.
 func (l *Logger) Fatal(ctx context.Context, format string, args ...interface{}) {
-	l.log(ctx, FATAL, format, args...)
+	l.log(ctx, FATAL, format, args, nil)
 	_ = CloseDetached(l, 2*time.Second)
 	os.Exit(1)
 }

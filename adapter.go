@@ -99,6 +99,6 @@ func (a *Adapter) Error(format string, args ...interface{}) {
 }
 
 // Fatal ghi log cấp FATAL và kết thúc tiến trình theo chuẩn LoggerWithCtx.Fatal.
-func (a *Adapter) Fatal(format string, args ...interface{}) {
-	a.lw.Fatal(format, args...)
+func (a *Adapter) Fatal(format string, args []interface{}, fields Fields) {
+	a.lw.Fatal(format, args, fields)
 }

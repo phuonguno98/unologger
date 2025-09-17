@@ -133,8 +133,8 @@ func (lw LoggerWithCtx) Error(format string, args ...interface{}) {
 	lw.l.log(lw.ctx, ERROR, format, args...)
 }
 
-func (lw LoggerWithCtx) Fatal(format string, args ...interface{}) {
-	lw.l.log(lw.ctx, FATAL, format, args...)
+func (lw LoggerWithCtx) Fatal(format string, args []interface{}, fields Fields) {
+	lw.l.log(lw.ctx, FATAL, format, args, fields)
 	_ = CloseDetached(lw.l, 2*time.Second)
 	os.Exit(1)
 }

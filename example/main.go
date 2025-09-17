@@ -154,7 +154,7 @@ func main() {
 
 	// 15) (Tùy chọn) Gọi Fatal để minh họa hành vi thoát chương trình
 	if os.Getenv("DEMO_FATAL") == "1" {
-		unologger.GetLogger(ctx).Fatal("Demo FATAL: ứng dụng sẽ thoát")
+		unologger.GetLogger(ctx).Fatal("Demo FATAL: ứng dụng sẽ thoát", nil, unologger.Fields{"exit_code": 1})
 	}
 }
 

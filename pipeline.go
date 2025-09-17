@@ -205,7 +205,12 @@ func (l *Logger) processTextEntry(e *logEntry) {
 		meta += fmt.Sprintf(" attrs=%v", attrs)
 	}
 
+	if len(e.fields) > 0 {
+		meta += fmt.Sprintf(" fields=%v", e.fields)
+	}
+
 	line := fmt.Sprintf("%s [%s] (%s)%s %s\n", ts, e.lvl.String(), module, meta, msg)
+
 	l.writeToAll([]byte(line), isErr)
 }
 
@@ -234,6 +239,7 @@ func (l *Logger) formatJSONEntry(e *logEntry) []byte {
 		TraceID:  traceID,
 		FlowID:   flowID,
 		Attrs:    attrs,
+		Fields:   e.fields, // NEW: Thêm fields vào HookEvent
 		JSONMode: true,
 	}
 	l.enqueueHook(hookEv)
@@ -248,6 +254,7 @@ func (l *Logger) formatJSONEntry(e *logEntry) []byte {
 		FlowID    string            `json:"flow_id,omitempty"`
 		Attrs     map[string]string `json:"attrs,omitempty"`
 		Message   string            `json:"message"`
+		Fields    Fields            `json:"fields,omitempty"` // NEW: Thêm trường fields
 	}
 
 	entry := jsonEntry{
@@ -255,6 +262,7 @@ func (l *Logger) formatJSONEntry(e *logEntry) []byte {
 		Level:   e.lvl.String(),
 		Module:  module,
 		Message: msg,
+		Fields:  e.fields, // NEW: Gán fields
 	}
 
 	if l.enableOTEL.Load() {
@@ -283,6 +291,7 @@ func (l *Logger) recycleEntry(e *logEntry) {
 	e.ctx = nil
 	e.args = nil
 	e.tmpl = ""
+	e.fields = nil // NEW: Xóa fields
 	// các trường còn lại là kiểu giá trị nhỏ
 	poolEntry.Put(e)
 }

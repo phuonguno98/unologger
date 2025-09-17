@@ -146,6 +146,10 @@ type Config struct {
 //
 
 // HookEvent là dữ liệu gửi vào hook.
+// Fields là kiểu dữ liệu để truyền các cặp key-value tùy chỉnh vào log.
+type Fields map[string]interface{}
+
+// HookEvent là dữ liệu gửi vào hook.
 type HookEvent struct {
 	Time     time.Time         // Thời điểm log
 	Level    Level             // Cấp độ log (DEBUG, INFO, WARN, ERROR, FATAL)
@@ -154,6 +158,7 @@ type HookEvent struct {
 	TraceID  string            // Trace ID
 	FlowID   string            // Flow ID
 	Attrs    map[string]string // Thuộc tính bổ sung
+	Fields   Fields            // Các trường dữ liệu tùy chỉnh
 	JSONMode bool              // true nếu log ở định dạng JSON
 }
 
@@ -264,11 +269,12 @@ type LoggerWithCtx struct {
 
 // logEntry là bản ghi log nội bộ (chưa format).
 type logEntry struct {
-	lvl  Level
-	ctx  context.Context
-	t    time.Time
-	tmpl string
-	args []any
+	lvl    Level
+	ctx    context.Context
+	t      time.Time
+	tmpl   string
+	args   []any
+	fields Fields // NEW: Thêm trường Fields
 }
 
 // logBatch gom nhiều logEntry (nội bộ).
