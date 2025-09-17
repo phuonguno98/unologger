@@ -1,9 +1,10 @@
 // Copyright (c) 2025 Nguyễn Thanh Phương
 // This source code is licensed under the MIT License found in the LICENSE file.
 
-// Package unologger - formatters.go
-// Cung cấp các bộ định dạng (formatters) mặc định cho log entry.
-
+// Package unologger provides a flexible and feature-rich logging library for Go applications.
+// This file defines default formatters for log entries: TextFormatter for human-readable
+// plain text output and JSONFormatter for structured JSON output.
+// These formatters implement the Formatter interface defined in logger_types.go.
 package unologger
 
 import (
@@ -13,12 +14,18 @@ import (
 	"time"
 )
 
-// TextFormatter định dạng log entry thành chuỗi văn bản.
+// TextFormatter formats a log entry into a human-readable plain text string.
+// It includes timestamp, log level, module, and any associated metadata or fields.
 type TextFormatter struct{}
 
-// Format định dạng HookEvent thành chuỗi văn bản.
+// Format converts a HookEvent into a byte slice representing a plain text log line.
+// The output format is: "TIMESTAMP [LEVEL] (MODULE) META MESSAGE\n".
+// Metadata (trace, flow, attrs, fields) is appended if present.
 func (f *TextFormatter) Format(ev HookEvent) ([]byte, error) {
+	// Format the timestamp with milliseconds and timezone.
 	ts := ev.Time.Format("2006-01-02 15:04:05.000 MST")
+
+	// Build metadata string from trace ID, flow ID, attributes, and fields.
 	meta := ""
 	if ev.TraceID != "" {
 		meta += fmt.Sprintf(" trace=%s", ev.TraceID)
@@ -33,28 +40,34 @@ func (f *TextFormatter) Format(ev HookEvent) ([]byte, error) {
 		meta += fmt.Sprintf(" fields=%v", ev.Fields)
 	}
 
+	// Construct the final log line.
 	line := fmt.Sprintf("%s [%s] (%s)%s %s\n", ts, ev.Level.String(), ev.Module, meta, ev.Message)
 	return []byte(line), nil
 }
 
-// JSONFormatter định dạng log entry thành chuỗi JSON.
+// JSONFormatter formats a log entry into a structured JSON string.
+// This is ideal for machine-readable logs that can be easily parsed by log management systems.
 type JSONFormatter struct{}
 
-// Format định dạng HookEvent thành chuỗi JSON.
+// Format converts a HookEvent into a byte slice representing a JSON log line.
+// The output includes timestamp, log level, module, message, trace ID, flow ID,
+// attributes, and custom fields, all serialized into a JSON object.
 func (f *JSONFormatter) Format(ev HookEvent) ([]byte, error) {
+	// Define an anonymous struct to control the JSON output structure and field names.
 	type jsonEntry struct {
-		Time    string            `json:"time"`
-		Level   string            `json:"level"`
-		Module  string            `json:"module,omitempty"`
-		TraceID string            `json:"trace_id,omitempty"`
-		FlowID  string            `json:"flow_id,omitempty"`
-		Attrs   map[string]string `json:"attrs,omitempty"`
-		Message string            `json:"message"`
-		Fields  Fields            `json:"fields,omitempty"`
+		Time    string            `json:"time"`              // Timestamp in RFC3339Nano format.
+		Level   string            `json:"level"`             // Log level string (e.g., "INFO").
+		Module  string            `json:"module,omitempty"`  // Module name, omitted if empty.
+		TraceID string            `json:"trace_id,omitempty"`// Trace ID, omitted if empty.
+		FlowID  string            `json:"flow_id,omitempty"` // Flow ID, omitted if empty.
+		Attrs   map[string]string `json:"attrs,omitempty"`   // Additional attributes, omitted if empty.
+		Message string            `json:"message"`           // The main log message.
+		Fields  Fields            `json:"fields,omitempty"`  // Custom key-value fields, omitted if empty.
 	}
 
+	// Populate the jsonEntry struct from the HookEvent.
 	entry := jsonEntry{
-		Time:    ev.Time.Format(time.RFC3339Nano),
+		Time:    ev.Time.Format(time.RFC3339Nano), // Use high-precision timestamp.
 		Level:   ev.Level.String(),
 		Module:  ev.Module,
 		Message: ev.Message,
@@ -64,13 +77,14 @@ func (f *JSONFormatter) Format(ev HookEvent) ([]byte, error) {
 		Fields:  ev.Fields,
 	}
 
+	// Encode the struct to JSON.
 	buf := &bytes.Buffer{}
 	enc := json.NewEncoder(buf)
-	enc.SetEscapeHTML(false)
+	enc.SetEscapeHTML(false) // Prevent HTML escaping for cleaner JSON output.
 	if err := enc.Encode(entry); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to encode log entry to JSON: %w", err)
 	}
-	// Add newline for easier parsing in log systems
+	// Add a newline character at the end for easier parsing by log aggregators.
 	buf.WriteByte('\n')
 	return buf.Bytes(), nil
 }
