@@ -2,9 +2,10 @@
 // This source code is licensed under the MIT License found in the LICENSE file.
 
 // Package unologger provides a flexible and feature-rich logging library for Go applications.
-// This file manages the hook system, allowing custom functions to be injected into the
-// logging pipeline. Hooks can execute synchronously or asynchronously, support timeouts,
-// and are designed to be panic-safe. They apply to all log levels (DEBUG, INFO, WARN, ERROR, FATAL).
+// This file implements the hook system, which allows for custom functions to be executed
+// as part of the logging pipeline. Hooks provide a powerful way to extend the logger's
+// functionality, for example, by sending notifications to external services for
+// certain log events.
 
 package unologger
 
@@ -14,25 +15,22 @@ import (
 	"time"
 )
 
-// startHookRunner initializes and starts the worker pool for processing hooks
-// when the logger is configured for asynchronous hook execution.
-// It creates a channel for hook tasks and launches worker goroutines.
+// startHookRunner starts the worker pool for processing hooks asynchronously.
+// This method is called internally when the logger is configured with async hooks
+// and there is at least one hook registered.
 func (l *Logger) startHookRunner() {
 	l.hooksMu.RLock()
 	hasHooks := len(l.hooks) > 0
 	l.hooksMu.RUnlock()
-	// Only start if async hooks are enabled and there are actual hooks to run.
 	if !l.hookAsync || !hasHooks {
 		return
 	}
-	// Initialize the hook queue channel.
+
 	l.hookQueueCh = make(chan hookTask, l.hookQueue)
-	// Launch worker goroutines to process tasks from the queue.
 	for i := 0; i < l.hookWorkers; i++ {
-		l.hookWg.Add(1) // Increment WaitGroup counter for each worker.
+		l.hookWg.Add(1)
 		go func() {
-			defer l.hookWg.Done() // Decrement WaitGroup counter when worker exits.
-			// Process tasks from the channel until it's closed.
+			defer l.hookWg.Done()
 			for task := range l.hookQueueCh {
 				l.runHooks(task.event)
 			}
@@ -40,163 +38,157 @@ func (l *Logger) startHookRunner() {
 	}
 }
 
-// enqueueHook adds a HookEvent to the asynchronous hook queue if async mode is enabled.
-// If async mode is disabled, it executes the hooks synchronously.
-// If the queue is full in async mode and DropOldest is not set, it records an error.
+// enqueueHook processes a log event with the registered hooks.
+// If async mode is enabled, it adds the event to a non-blocking queue.
+// If the queue is full, an error is recorded. If async is disabled,
+// it executes the hooks synchronously in the same goroutine.
 func (l *Logger) enqueueHook(ev HookEvent) {
 	l.hooksMu.RLock()
 	hasHooks := len(l.hooks) > 0
 	l.hooksMu.RUnlock()
 	if !hasHooks {
-		return // No hooks registered, so nothing to do.
+		return // No-op if no hooks are registered.
 	}
 
 	if l.hookAsync {
-		// Attempt to send the task to the queue without blocking.
 		select {
 		case l.hookQueueCh <- hookTask{event: ev}:
 			// Task successfully enqueued.
 		default:
-			// Queue is full, record an error.
+			// Queue is full.
 			l.recordHookError(ev, ErrHookQueueFull)
 		}
 	} else {
-		// Execute hooks synchronously.
+		// Execute synchronously.
 		l.runHooks(ev)
 	}
 }
 
-// snapshotHooks returns a copy of the currently registered hook functions.
-// This ensures that the slice of hooks can be iterated without holding a lock
-// during hook execution, preventing deadlocks if hooks themselves acquire locks.
+// snapshotHooks creates and returns a copy of the current hook functions.
+// This is a crucial step to prevent deadlocks. By iterating over a copy,
+// we avoid holding a read lock on l.hooksMu while executing the hooks,
+// which might themselves try to acquire a lock on the logger.
 func (l *Logger) snapshotHooks() []HookFunc {
 	l.hooksMu.RLock()
 	defer l.hooksMu.RUnlock()
 	if len(l.hooks) == 0 {
 		return nil
 	}
-	// Create a new slice and copy hooks to it.
 	cp := make([]HookFunc, len(l.hooks))
 	copy(cp, l.hooks)
 	return cp
 }
 
-// runHooks executes all registered hook functions for a given HookEvent.
-// Each hook is executed with a timeout (if configured) and is protected against panics.
-// Any errors or panics during hook execution are recorded.
+// runHooks executes all registered hooks for a given event.
+// Each hook is executed in a panic-safe manner. If a timeout is configured,
+// each hook's execution is constrained by it. Errors and panics are captured
+// and recorded.
 func (l *Logger) runHooks(ev HookEvent) {
-	hooks := l.snapshotHooks() // Get a snapshot of hooks to avoid race conditions.
+	hooks := l.snapshotHooks()
 	if len(hooks) == 0 {
 		return
 	}
 
 	for _, hk := range hooks {
-		// Use an anonymous function to defer panic recovery for each hook.
+		// IIFE to scope the defer for panic recovery.
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					// Recover from panic and record it as a hook error.
-					l.recordHookError(ev, ErrHookPanic)
+					l.recordHookError(ev, fmt.Errorf("%w: %v", ErrHookPanic, r))
 				}
 			}()
 
 			if l.hookTimeout > 0 {
-				// Execute hook with a context timeout.
-				ctx, cancel := context.WithTimeout(context.Background(), l.hookTimeout)
-				defer cancel() // Ensure context resources are released.
-
-				done := make(chan struct{}) // Channel to signal hook completion.
-				var err error
-				go func() {
-					err = hk(ev) // Execute the hook function.
-					close(done)  // Signal completion.
-				}()
-
-				select {
-				case <-ctx.Done():
-					// Hook timed out.
-					l.recordHookError(ev, ErrHookTimeout)
-				case <-done:
-					// Hook completed, check for returned error.
-					if err != nil {
-						l.recordHookError(ev, err)
-					}
-				}
+				l.runHookWithTimeout(hk, ev)
 			} else {
-				// Execute hook without a timeout.
-				if err := hk(ev); err != nil {
-					l.recordHookError(ev, err)
-				}
+				l.runHookWithoutTimeout(hk, ev)
 			}
-		}() // End of anonymous function for panic recovery.
+		}()
 	}
 }
 
-// recordHookError records a hook execution error, increments the error counter,
-// and stores detailed error information in a circular buffer (limited by hookErrMax).
+// runHookWithTimeout executes a single hook with a timeout.
+func (l *Logger) runHookWithTimeout(hk HookFunc, ev HookEvent) {
+	ctx, cancel := context.WithTimeout(context.Background(), l.hookTimeout)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- hk(ev)
+	}()
+
+	select {
+	case <-ctx.Done():
+		l.recordHookError(ev, ErrHookTimeout)
+	case err := <-done:
+		if err != nil {
+			l.recordHookError(ev, err)
+		}
+	}
+}
+
+// runHookWithoutTimeout executes a single hook without a timeout.
+func (l *Logger) runHookWithoutTimeout(hk HookFunc, ev HookEvent) {
+	if err := hk(ev); err != nil {
+		l.recordHookError(ev, err)
+	}
+}
+
+// recordHookError atomically increments the hook error counter and adds a
+// detailed error to a circular buffer, which holds up to hookErrMax entries.
 func (l *Logger) recordHookError(ev HookEvent, err error) {
-	l.hookErrCount.Add(1) // Increment atomic error counter.
-	l.hookErrMu.Lock()    // Protect access to the hook error log slice.
+	l.hookErrCount.Add(1)
+	l.hookErrMu.Lock()
 	defer l.hookErrMu.Unlock()
 
-	// Ensure hookErrMax is valid, fallback to default if not.
 	if l.hookErrMax <= 0 {
 		l.hookErrMax = defaultHookErrMax
 	}
 
-	// Implement a circular buffer for hook errors.
-	if len(l.hookErrLog) >= l.hookErrMax {
-		// Remove the oldest elements to make space for new ones.
-		trim := len(l.hookErrLog) - (l.hookErrMax - 1)
-		if trim < 1 {
-			trim = 1 // Ensure at least one element is trimmed if buffer is full.
-		}
-		l.hookErrLog = append(l.hookErrLog[trim:], HookError{
-			Time:    time.Now(),
-			Level:   ev.Level,
-			Module:  ev.Module,
-			Message: ev.Message,
-			Err:     err,
-		})
-		return
-	}
-	// Append new error if buffer is not full.
-	l.hookErrLog = append(l.hookErrLog, HookError{
+	newErr := HookError{
 		Time:    time.Now(),
 		Level:   ev.Level,
 		Module:  ev.Module,
 		Message: ev.Message,
 		Err:     err,
-	})
+	}
+
+	if len(l.hookErrLog) >= l.hookErrMax {
+		// Evict the oldest error to make room.
+		l.hookErrLog = append(l.hookErrLog[1:], newErr)
+	} else {
+		l.hookErrLog = append(l.hookErrLog, newErr)
+	}
 }
 
-// GetHookErrors returns a copy of the recorded hook errors.
-// This allows inspection of recent hook failures without direct access to the internal buffer.
+// GetHookErrors returns a safe copy of the recent hook execution errors.
 func (l *Logger) GetHookErrors() []HookError {
-	l.hookErrMu.Lock() // Protect access to the hook error log slice.
+	l.hookErrMu.Lock()
 	defer l.hookErrMu.Unlock()
-	// Return a copy to prevent external modification of the internal slice.
 	out := make([]HookError, len(l.hookErrLog))
 	copy(out, l.hookErrLog)
 	return out
 }
 
-// closeHookRunner closes the hook queue channel and waits for all hook workers to finish.
-// This is typically called during logger shutdown. The hook runner can be restarted
-// after being closed, for example, if hooks are dynamically reconfigured.
+// closeHookRunner gracefully shuts down the asynchronous hook processing system.
+// It closes the queue and waits for all worker goroutines to finish their tasks.
+// It resets the queue channel to nil, allowing the runner to be restarted later.
 func (l *Logger) closeHookRunner() {
 	if l.hookAsync && l.hookQueueCh != nil {
-		close(l.hookQueueCh) // Close the channel to signal workers to exit.
-		l.hookWg.Wait()      // Wait for all worker goroutines to complete.
-		l.hookQueueCh = nil  // Reset the channel to allow restarting the runner.
+		close(l.hookQueueCh)
+		l.hookWg.Wait()
+		l.hookQueueCh = nil // Allow runner to be restarted.
 	}
 }
 
-// ErrHookQueueFull is returned when a hook event cannot be enqueued because the queue is full.
+// ErrHookQueueFull signifies that a log event could not be processed by an
+// async hook because the hook queue was full.
 var ErrHookQueueFull = fmt.Errorf("hook queue full")
 
-// ErrHookTimeout is returned when a hook function exceeds its configured execution timeout.
+// ErrHookTimeout signifies that a hook function failed to complete within
+// its configured timeout.
 var ErrHookTimeout = fmt.Errorf("hook timeout")
 
-// ErrHookPanic is returned when a hook function panics during execution.
+// ErrHookPanic signifies that a hook function panicked during execution.
+// The panic value is captured and included in the recorded error.
 var ErrHookPanic = fmt.Errorf("hook panic")

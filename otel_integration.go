@@ -2,10 +2,10 @@
 // This source code is licensed under the MIT License found in the LICENSE file.
 
 // Package unologger provides a flexible and feature-rich logging library for Go applications.
-// This file provides integration functions with OpenTelemetry (OTel) to automatically
-// extract trace IDs and span IDs from the `context.Context` and attach them to log entries.
-// This integration is crucial for correlating logs with tracing data, enabling better
-// observability and debugging in distributed systems.
+// This file contains the integration logic for OpenTelemetry (OTel).
+// This integration allows the logger to automatically extract trace and span IDs
+// from the context and include them in log entries, which is essential for
+// correlating logs with traces in distributed systems.
 
 package unologger
 
@@ -15,52 +15,55 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// extractOTelTraceID attempts to extract the trace ID from the OpenTelemetry span
-// context within the provided `context.Context`.
-// It returns the trace ID as a string if found and valid, otherwise returns an empty string.
+// extractOTelTraceID is an internal helper that safely extracts the OTel trace ID
+// from a context. It returns the trace ID as a string if a valid span is found,
+// otherwise it returns an empty string.
 func extractOTelTraceID(ctx context.Context) string {
-	// Retrieve the current span from the context.
-	if span := trace.SpanFromContext(ctx); span != nil {
-		sc := span.SpanContext() // Get the SpanContext.
-		if sc.HasTraceID() {     // Check if the SpanContext has a valid TraceID.
-			return sc.TraceID().String() // Return the string representation of the TraceID.
-		}
+	span := trace.SpanFromContext(ctx)
+	if span == nil {
+		return ""
 	}
-	return "" // No valid TraceID found in the context.
+	spanContext := span.SpanContext()
+	if !spanContext.HasTraceID() {
+		return ""
+	}
+	return spanContext.TraceID().String()
 }
 
-// extractOTelSpanID attempts to extract the span ID from the OpenTelemetry span
-// context within the provided `context.Context`.
-// It returns the span ID as a string if found and valid, otherwise returns an empty string.
+// extractOTelSpanID is an internal helper that safely extracts the OTel span ID
+// from a context. It returns the span ID as a string if a valid span is found,
+// otherwise it returns an empty string.
 func extractOTelSpanID(ctx context.Context) string {
-	// Retrieve the current span from the context.
-	if span := trace.SpanFromContext(ctx); span != nil {
-		sc := span.SpanContext() // Get the SpanContext.
-		if sc.HasSpanID() {      // Check if the SpanContext has a valid SpanID.
-			return sc.SpanID().String() // Return the string representation of the SpanID.
-		}
+	span := trace.SpanFromContext(ctx)
+	if span == nil {
+		return ""
 	}
-	return "" // No valid SpanID found in the context.
+	spanContext := span.SpanContext()
+	if !spanContext.HasSpanID() {
+		return ""
+	}
+	return spanContext.SpanID().String()
 }
 
-// AttachOTelTrace attaches the OpenTelemetry trace ID and span ID (if available)
-// from the provided `context.Context` to the log context.
-// If no valid trace ID is found in the OTel context, the original context is returned unchanged.
-// The trace ID is attached using WithTraceID, and the span ID is attached as a custom attribute
-// named "span_id" using WithAttrs, allowing hooks or writers to utilize it.
+// AttachOTelTrace enriches the given context with trace and span IDs from an
+// active OpenTelemetry span, if one exists.
+//
+// It extracts the trace ID and attaches it using `WithTraceID`. The span ID is
+// attached as a custom attribute with the key "span_id". This function is
+// automatically called by the logger's core `log` method if the `EnableOTel`
+// configuration flag is set to true.
 func AttachOTelTrace(ctx context.Context) context.Context {
-	tid := extractOTelTraceID(ctx) // Extract Trace ID.
-	sid := extractOTelSpanID(ctx)  // Extract Span ID.
-
+	tid := extractOTelTraceID(ctx)
 	if tid == "" {
-		return ctx // If no valid Trace ID, return the original context.
+		// If there's no trace ID, there's nothing to attach.
+		return ctx
 	}
 
-	// Attach the Trace ID to the log context.
+	// Attach the trace ID to the context for direct access.
 	ctx = WithTraceID(ctx, tid)
 
-	if sid != "" {
-		// Attach the Span ID as a custom attribute.
+	// Also attach the span ID as a field for more detailed correlation.
+	if sid := extractOTelSpanID(ctx); sid != "" {
 		ctx = WithAttrs(ctx, Fields{"span_id": sid})
 	}
 	return ctx

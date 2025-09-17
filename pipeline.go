@@ -2,9 +2,9 @@
 // This source code is licensed under the MIT License found in the LICENSE file.
 
 // Package unologger provides a flexible and feature-rich logging library for Go applications.
-// This file implements the core log processing pipeline, which includes enqueuing,
-// batching, formatting, applying hooks, data masking, and writing log entries to various outputs.
-// It supports all log levels: DEBUG, INFO, WARN, ERROR, FATAL.
+// This file implements the core asynchronous processing pipeline. It contains the logic
+// for the worker goroutines that batch, format, and write log entries, forming the
+// high-performance engine of the logger.
 
 package unologger
 
@@ -14,116 +14,143 @@ import (
 	"time"
 )
 
-// ctxFieldsKey is the context key used to store custom Fields in the context.
-const ctxFieldsKey ctxKey = "fields"
-
-// enqueue adds a logEntry to the logger's internal channel.
-// It respects the NonBlocking and DropOldest configuration settings.
-// If the logger is closed, the entry is immediately returned to the pool.
+// enqueue adds a log entry to the logger's processing channel.
+// This method contains the logic for both blocking and non-blocking behavior.
+//
+// Behavior paths:
+//
+//  1. If the logger is closed, the entry is immediately discarded and recycled.
+//
+//  2. If in blocking mode (`nonBlocking` is false), it will wait for space in the channel.
+//
+//  3. If in non-blocking mode (`nonBlocking` is true):
+//     a. It first tries to send the entry.
+//
+//     b. If the channel is full and `dropOldest` is true, it attempts to remove the
+//     oldest entry from the channel to make space for the new one.
+//
+//     c. If the channel is full and `dropOldest` is false (or if making space fails),
+//     the new entry is dropped.
 func (l *Logger) enqueue(e *logEntry) {
-	if l.closed.IsTrue() {
-		poolEntry.Put(e) // Return entry to pool if logger is closed.
+	if l.closed.Load() {
+		recycleEntry(e)
 		return
 	}
 
-	if l.nonBlocking {
-		// Attempt to send the entry without blocking.
+	if !l.nonBlocking {
+		// Blocking mode: wait for space.
+		l.ch <- e
+		return
+	}
+
+	// Non-blocking mode.
+	if l.dropOldest {
+		// Try to drop the oldest entry to make room.
 		select {
 		case l.ch <- e:
-			// Entry successfully enqueued.
+			// Enqueued successfully.
 		default:
-			// Channel is full.
-			if l.dropOldest {
-				// If dropOldest is enabled, try to remove an old entry to make space.
-				select {
-				case old := <-l.ch:
-					if old != nil {
-						l.droppedCount.Add(1) // Increment dropped count.
-						poolEntry.Put(old)    // Return old entry to pool.
-					}
-				default:
-					// No old entry to drop immediately, proceed to try enqueuing.
-				}
-				// Attempt to enqueue again after potentially dropping an old entry.
+			// Channel is full, try to dequeue the oldest and enqueue the new one.
+			select {
+			case oldest := <-l.ch:
+				// Dropped the oldest entry.
+				l.droppedCount.Add(1)
+				recycleEntry(oldest)
+				// Now try to enqueue the new entry again.
 				select {
 				case l.ch <- e:
-					// Entry successfully enqueued.
+					// Success.
 				default:
-					// Still full, drop the current entry.
+					// Still full, drop the new entry.
 					l.droppedCount.Add(1)
-					poolEntry.Put(e)
+					recycleEntry(e)
 				}
-			} else {
-				// Non-blocking and channel full, but not dropping oldest. Drop current entry.
+			default:
+				// Channel is full and couldn't even drop an old one, so drop the new one.
 				l.droppedCount.Add(1)
-				poolEntry.Put(e)
+				recycleEntry(e)
 			}
 		}
 	} else {
-		// Blocking enqueue: wait until space is available in the channel.
-		l.ch <- e
+		// Default non-blocking: drop the new entry if the queue is full.
+		select {
+		case l.ch <- e:
+			// Enqueued successfully.
+		default:
+			// Channel is full, drop the current entry.
+			l.droppedCount.Add(1)
+			recycleEntry(e)
+		}
 	}
 }
 
-// workerLoop is the main goroutine for each worker. It consumes log entries from the channel,
-// batches them, and processes/writes them.
+// workerLoop is the main loop for a single worker goroutine. It is responsible for
+// receiving log entries, collecting them into batches, and flushing them for processing.
+// Batching is triggered by two conditions: the batch reaching its maximum size, or a
+// timeout expiring.
 func (l *Logger) workerLoop() {
-	defer l.wg.Done() // Signal completion to the WaitGroup when the worker exits.
+	defer l.wg.Done()
 
-	// Get a logBatch from the pool for reuse.
 	batch := poolBatch.Get().(*logBatch)
-	batch.items = batch.items[:0] // Reset slice length.
-	batch.created = time.Now()    // Mark batch creation time.
+	defer poolBatch.Put(batch) // Ensure batch is returned to the pool on exit.
 
-	// flush is a helper function to process the current batch.
+	batch.items = batch.items[:0]
+	batch.created = time.Now()
+
+	// flush is a closure to process the current batch.
 	flush := func() {
 		if len(batch.items) > 0 {
-			l.processBatch(batch.items)   // Process the collected log entries.
-			batch.items = batch.items[:0] // Clear the batch for next use.
-			batch.created = time.Now()    // Reset batch creation time.
-			l.batchCount.Add(1)           // Increment batch counter.
+			l.processBatch(batch.items)
+			l.batchCount.Add(1)
+			// Reset batch for the next collection.
+			for i := range batch.items {
+				batch.items[i] = nil // Avoid memory leaks.
+			}
+			batch.items = batch.items[:0]
+			batch.created = time.Now()
 		}
 	}
 
-	// Initial batch wait duration.
+	// The timer triggers a flush when the MaxWait duration is reached.
 	wait := time.Duration(l.batchWaitA.Load())
 	if wait <= 0 {
-		wait = time.Second // Default to 1 second if invalid.
+		wait = time.Second
 	}
-	timer := time.NewTimer(wait) // Timer for flushing batches based on time.
-	defer timer.Stop()           // Ensure timer is stopped when worker exits.
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
 
 	for {
 		select {
 		case e, ok := <-l.ch:
-			// Received a log entry from the channel.
 			if !ok {
-				// Channel is closed, indicating logger shutdown. Flush any remaining entries.
+				// Channel closed, meaning the logger is shutting down.
+				// Flush any remaining entries and exit the worker.
 				flush()
-				poolBatch.Put(batch) // Return batch to pool.
-				return               // Exit worker loop.
+				return
 			}
-			batch.items = append(batch.items, e) // Add entry to the current batch.
 
-			// Check if batch size limit is reached.
+			batch.items = append(batch.items, e)
+
+			// Flush if the batch size limit is reached.
 			size := int(l.batchSizeA.Load())
 			if size <= 0 {
-				size = 1 // Default to 1 if invalid.
+				size = 1
 			}
 			if len(batch.items) >= size {
-				flush() // Flush the batch if size limit is reached.
-				// Reset the timer after flushing.
+				flush()
+				// It's crucial to stop and drain the timer before resetting it
+				// to prevent race conditions with the timer channel.
 				if !timer.Stop() {
-					<-timer.C // Drain the timer channel if it had already fired.
-				}
-				wait = time.Duration(l.batchWaitA.Load())
-				if wait <= 0 {
-					wait = time.Second
+					select {
+					case <-timer.C: // Drain the channel.
+					default:
+					}
 				}
 				timer.Reset(wait)
 			}
+
 		case <-timer.C:
-			// Timer fired, flush the batch based on time limit.
+			// Timer fired, flush the batch regardless of its size.
 			flush()
 			// Reset the timer for the next interval.
 			wait = time.Duration(l.batchWaitA.Load())
@@ -135,26 +162,25 @@ func (l *Logger) workerLoop() {
 	}
 }
 
-// processBatch processes a slice of logEntry instances.
-// It applies context fields, formats messages, applies masking,
-// enqueues hooks, formats the log entry, and writes it to the appropriate writers.
+// processBatch orchestrates the processing of a slice of log entries.
+// For each entry, it formats the message, applies masking, triggers hooks,
+// formats the final output, and writes it to the configured destinations.
 func (l *Logger) processBatch(entries []*logEntry) {
 	for _, e := range entries {
-		l.writtenCount.Add(1) // Increment total written count.
+		l.writtenCount.Add(1)
 
-		// Safely read the current timezone location.
 		l.locMu.RLock()
 		loc := l.loc
 		l.locMu.RUnlock()
 
-		// Extract metadata from the log entry's context.
+		// Extract metadata from the context.
 		module, _ := e.ctx.Value(ctxModuleKey).(string)
 		traceID, _ := e.ctx.Value(ctxTraceIDKey).(string)
 		flowID, _ := e.ctx.Value(ctxFlowIDKey).(string)
-
-		// Merge fields from context and log entry.
 		ctxFields, _ := e.ctx.Value(ctxFieldsKey).(Fields)
-		mergedFields := make(Fields)
+
+		// Merge fields from context and the log call itself.
+		mergedFields := make(Fields, len(ctxFields)+len(e.fields))
 		for k, v := range ctxFields {
 			mergedFields[k] = v
 		}
@@ -164,47 +190,49 @@ func (l *Logger) processBatch(entries []*logEntry) {
 
 		// Format the log message and apply masking.
 		msg := fmt.Sprintf(e.tmpl, e.args...)
-		jsonMode := l.jsonFmtFlag.Load()    // Get current JSON format setting.
-		msg = l.applyMasking(msg, jsonMode) // Apply masking based on JSON mode.
+		jsonMode := l.jsonFmtFlag.Load()
+		msg = l.applyMasking(msg, jsonMode)
 
-		// Create a HookEvent for processing by hooks.
+		// Prepare and enqueue the event for the hook system.
 		hookEv := HookEvent{
-			Time:     e.t.In(loc), // Convert timestamp to logger's timezone.
+			Time:     e.t.In(loc),
 			Level:    e.lvl,
 			Module:   module,
 			Message:  msg,
 			TraceID:  traceID,
 			FlowID:   flowID,
-			Attrs:    nil,          // Attrs are no longer directly used in HookEvent, merged into Fields.
-			Fields:   mergedFields, // Use the merged fields.
+			Attrs:    mergedFields, // Attrs is now an alias for Fields.
+			Fields:   mergedFields,
 			JSONMode: jsonMode,
 		}
-		l.enqueueHook(hookEv) // Enqueue the event for hook processing.
+		l.enqueueHook(hookEv)
 
-		// Format the log entry using the configured formatter.
-		b, err := l.formatter.Format(hookEv)
+		// Format the final log line.
+		l.formatterMu.RLock() // Acquire read lock
+		formatter := l.formatter // Get the current formatter
+		l.formatterMu.RUnlock() // Release read lock
+
+		b, err := formatter.Format(hookEv)
 		if err != nil {
-			// Handle formatter errors: print to stderr and increment error count.
-			_, _ = fmt.Fprintf(os.Stderr, "unologger: formatter error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "unologger: formatter error: %v\n", err)
 			l.writeErrCount.Add(1)
-			continue // Skip writing this entry and proceed to the next.
+			recycleEntry(e) // Recycle even on format error.
+			continue
 		}
 
-		// Determine if the log should also go to stderr (for ERROR and FATAL levels).
-		isErr := e.lvl >= ERROR
-		l.writeToAll(b, isErr) // Write the formatted log to all configured writers.
-		l.recycleEntry(e)      // Return the log entry to the pool.
+		// Write to configured outputs.
+		isErrLevel := e.lvl >= ERROR
+		l.writeToAll(b, isErrLevel)
+		recycleEntry(e)
 	}
 }
 
-// recycleEntry cleans up references within a logEntry before returning it to the sync.Pool.
-// This helps prevent memory leaks and ensures proper reuse of pooled objects.
-func (l *Logger) recycleEntry(e *logEntry) {
-	// Clear large or sensitive references to aid garbage collection.
+// recycleEntry resets a logEntry and returns it to the sync.Pool.
+// Nil-ing out pointers helps the GC by breaking references.
+func recycleEntry(e *logEntry) {
 	e.ctx = nil
 	e.args = nil
 	e.tmpl = ""
-	e.fields = nil // Clear custom fields.
-	// Other fields are small value types and don't need explicit clearing.
-	poolEntry.Put(e) // Return the entry to the pool.
+	e.fields = nil
+	poolEntry.Put(e)
 }

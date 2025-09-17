@@ -2,12 +2,9 @@
 // This source code is licensed under the MIT License found in the LICENSE file.
 
 // Package unologger provides a flexible and feature-rich logging library for Go applications.
-// This file implements the sensitive data masking mechanisms for log entries.
-// It supports two primary masking strategies:
-//   - Regex-based masking: Applies regular expressions to obscure patterns in text or JSON logs.
-//   - Field-level JSON masking: Masks specific fields within JSON log structures.
-// The goal is to prevent sensitive information (e.g., credit card numbers, emails, tokens, passwords)
-// from being written directly into logs, enhancing security and compliance.
+// This file implements the logic for masking sensitive data within log messages.
+// It supports both regex-based pattern matching and structured JSON field masking
+// to prevent credentials, personal information, and other secrets from being logged.
 
 package unologger
 
@@ -19,140 +16,142 @@ import (
 	"regexp"
 )
 
-// applyMasking applies configured masking rules to a log message.
-// It first attempts field-level JSON masking if jsonMode is true and then
-// applies regex-based masking to the result. If JSON parsing fails, it falls back
-// to only regex masking.
+// applyMasking applies all configured masking rules to a log message string.
+//
+// The masking process follows a specific order:
+//  1. If in JSON mode, it first attempts to mask specific fields within the JSON structure.
+//  2. It then applies regex-based masking to the result (either the original string
+//     or the JSON-masked string).
+//
+// This ensures that regex rules can still apply even after field-level masking.
 func (l *Logger) applyMasking(msg string, jsonMode bool) string {
-	l.dynConfig.mu.RLock() // Acquire read lock for dynamic configuration.
+	l.dynConfig.mu.RLock()
 	regexRules := l.dynConfig.RegexRules
 	jsonFieldRules := l.dynConfig.JSONFieldRules
-	l.dynConfig.mu.RUnlock() // Release read lock.
+	l.dynConfig.mu.RUnlock()
 
 	if jsonMode {
 		// Attempt to mask JSON fields first.
 		if maskedJSON, ok := maskJSONFieldsWithRules(msg, jsonFieldRules); ok {
-			// If JSON parsing and field masking were successful, apply regex rules to the result.
+			// If successful, apply regex rules to the already-masked JSON string.
 			return maskRegexWithRules(maskedJSON, regexRules)
 		}
-		// If JSON parsing failed, fall through to regex masking only.
+		// If JSON parsing failed, fall through to apply regex masking to the original string.
 	}
-	// Apply regex rules to the message (either original or after failed JSON parsing).
+
+	// For non-JSON logs, or as a fallback for failed JSON parsing.
 	return maskRegexWithRules(msg, regexRules)
 }
 
-// maskRegexWithRules applies all provided regex rules to a given string.
-// It iterates through each rule and replaces matched patterns with their specified replacement string.
+// maskRegexWithRules is a helper that applies a slice of regex rules to a string.
 func maskRegexWithRules(s string, rules []MaskRuleRegex) string {
 	if len(rules) == 0 {
-		return s // No regex rules to apply.
+		return s
 	}
 	masked := s
 	for _, rule := range rules {
 		if rule.Pattern != nil {
-			// Replace all occurrences of the pattern in the string.
 			masked = rule.Pattern.ReplaceAllString(masked, rule.Replacement)
 		}
 	}
 	return masked
 }
 
-// maskJSONFieldsWithRules parses a JSON string and masks values of fields
-// that match the provided JSONFieldRules.
-// It returns the masked JSON string and true if parsing and masking were successful.
-// If JSON parsing fails, it returns an empty string and false.
+// maskJSONFieldsWithRules parses a JSON string and masks the values of any fields
+// that match the configured rules. It returns the modified JSON string.
+// If the input string is not valid JSON, it returns the original string and false.
 func maskJSONFieldsWithRules(s string, rules []MaskFieldRule) (string, bool) {
 	if len(rules) == 0 {
-		return s, true // No JSON field rules to apply.
+		return s, true
 	}
 
-	// Parse the JSON string into a generic interface{}.
 	var data interface{}
+	// Use a decoder with UseNumber() to prevent large integer IDs from being
+	// converted to float64, which could cause a loss of precision.
 	dec := json.NewDecoder(bytes.NewBufferString(s))
-	dec.UseNumber() // Preserve numbers as json.Number instead of float64.
+	dec.UseNumber()
 	if err := dec.Decode(&data); err != nil {
-		return "", false // Failed to parse JSON.
+		return s, false // Not a valid JSON string.
 	}
 
-	// Recursively apply masking to the parsed JSON data.
+	// Recursively traverse the data structure and mask values.
 	maskJSONValueWithRules(&data, rules)
 
-	// Encode the modified data back into a JSON string.
+	// Re-encode the data structure back to a JSON string.
 	buf := &bytes.Buffer{}
 	enc := json.NewEncoder(buf)
-	enc.SetEscapeHTML(false) // Prevent HTML escaping for cleaner JSON output.
+	enc.SetEscapeHTML(false) // Prevent characters like '<' and '>' from being escaped.
 	if err := enc.Encode(data); err != nil {
-		return "", false // Failed to encode JSON.
+		// This should be a rare event, but if it happens, return the original string.
+		return s, false
 	}
-	// Trim the trailing newline added by json.Encoder for single-line log entries.
+	// Trim the trailing newline added by the encoder.
 	out := bytes.TrimRight(buf.Bytes(), "\n")
 	return string(out), true
 }
 
-// maskJSONValueWithRules recursively applies masking to JSON values.
-// It traverses maps (objects) and slices (arrays) to find fields that need masking.
+// maskJSONValueWithRules recursively traverses a data structure (map or slice)
+// and applies masking rules. It takes a pointer to an interface{} to allow
+// in-place modification of the underlying data.
 func maskJSONValueWithRules(v *interface{}, rules []MaskFieldRule) {
 	switch val := (*v).(type) {
 	case map[string]interface{}:
-		// Iterate over map (JSON object) fields.
-		for k, sub := range val {
+		for k, subVal := range val {
 			if shouldMaskKeyWithRules(k, rules) {
-				// If the key should be masked, replace its value.
 				val[k] = getMaskReplacementForKeyWithRules(k, rules)
 			} else {
-				// Recursively mask nested values.
-				maskJSONValueWithRules(&sub, rules)
-				val[k] = sub // Update the map with the (potentially masked) sub-value.
+				// The value might be another map or slice, so recurse.
+				maskJSONValueWithRules(&subVal, rules)
+				val[k] = subVal
 			}
 		}
 	case []interface{}:
-		// Iterate over slice (JSON array) elements.
-		for i, sub := range val {
-			// Recursively mask each element.
-			maskJSONValueWithRules(&sub, rules)
-			val[i] = sub // Update the slice with the (potentially masked) sub-value.
+		for i, subVal := range val {
+			// Recurse into each element of the slice.
+			maskJSONValueWithRules(&subVal, rules)
+			val[i] = subVal
 		}
 	}
 }
 
-// shouldMaskKeyWithRules checks if a given key should be masked based on the provided rules.
-// It returns true if the key is found in any of the MaskFieldRule's Keys list.
+// shouldMaskKeyWithRules checks if a given key matches any of the configured masking rules.
 func shouldMaskKeyWithRules(key string, rules []MaskFieldRule) bool {
 	for _, rule := range rules {
 		for _, rk := range rule.Keys {
 			if rk == key {
-				return true // Key found in masking rules.
+				return true
 			}
 		}
 	}
-	return false // Key does not need masking.
+	return false
 }
 
-// getMaskReplacementForKeyWithRules retrieves the replacement string for a given masked key.
-// It returns the replacement string from the first matching rule, or a default "***" if no rule matches.
+// getMaskReplacementForKeyWithRules finds the corresponding replacement string for a key.
 func getMaskReplacementForKeyWithRules(key string, rules []MaskFieldRule) string {
 	for _, rule := range rules {
 		for _, rk := range rule.Keys {
 			if rk == key {
-				return rule.Replacement // Return the specific replacement for this rule.
+				return rule.Replacement
 			}
 		}
 	}
-	return "***" // Default replacement if no specific rule is found.
+	return "***" // Fallback replacement.
 }
 
-// compileMaskRegexes compiles a map of regex pattern strings to replacement strings
-// into a slice of MaskRuleRegex. Invalid regex patterns are ignored.
+// compileMaskRegexes is an internal helper that compiles a map of string patterns
+// into a slice of MaskRuleRegex. This is typically called once during logger initialization.
+// If a pattern is an invalid regex, an error is printed to os.Stderr and the pattern is skipped.
 func compileMaskRegexes(patterns map[string]string) []MaskRuleRegex {
-	var rules []MaskRuleRegex
+	if len(patterns) == 0 {
+		return nil
+	}
+	rules := make([]MaskRuleRegex, 0, len(patterns))
 	for pat, repl := range patterns {
 		if re, err := regexp.Compile(pat); err == nil {
-			// Successfully compiled regex, add to rules.
 			rules = append(rules, MaskRuleRegex{Pattern: re, Replacement: repl})
 		} else {
-			// Log or handle the error for invalid regex pattern if necessary.
-			// For now, invalid patterns are simply skipped.
-			fmt.Fprintf(os.Stderr, "unologger: failed to compile regex pattern '%s': %v\n", pat, err)
+			// Log initialization error directly to stderr.
+			fmt.Fprintf(os.Stderr, "unologger: failed to compile regex masking pattern '%s': %v\n", pat, err)
 		}
 	}
 	return rules

@@ -2,130 +2,120 @@
 // This source code is licensed under the MIT License found in the LICENSE file.
 
 // Package unologger provides a flexible and feature-rich logging library for Go applications.
-// This file defines an Adapter that wraps a LoggerWithCtx, allowing external packages
-// or modules to log messages without explicitly passing a context.Context in every call.
-// It supports simplified logging interfaces for easier integration.
+// This file defines a logging Adapter, which provides a simplified, context-unaware
+// interface for external packages. It wraps a context-aware logger, making it easier
+// to integrate with code that does not propagate context.Context.
 
 package unologger
 
 import "context"
 
-// SimpleLogger is a minimalist logging interface designed for external packages
-// that do not require context propagation in every log call.
+// SimpleLogger defines a basic logging interface with common log levels.
+// It is intended for packages that need a simple logger without fatal error handling.
 type SimpleLogger interface {
-	// Debug logs a message at DEBUG level.
+	// Debug logs a message at DEBUG level with support for fmt.Sprintf-style formatting.
 	Debug(format string, args ...interface{})
-	// Info logs a message at INFO level.
+	// Info logs a message at INFO level with support for fmt.Sprintf-style formatting.
 	Info(format string, args ...interface{})
-	// Warn logs a message at WARN level.
+	// Warn logs a message at WARN level with support for fmt.Sprintf-style formatting.
 	Warn(format string, args ...interface{})
-	// Error logs a message at ERROR level.
+	// Error logs a message at ERROR level with support for fmt.Sprintf-style formatting.
 	Error(format string, args ...interface{})
 }
 
-// ExtendedLogger extends the SimpleLogger interface by adding a Fatal method.
-// This interface is suitable for external packages that need to log critical
-// errors that should terminate the application.
+// ExtendedLogger extends the SimpleLogger interface with a Fatal method.
+// This is suitable for components that need to log critical errors and terminate the application.
 type ExtendedLogger interface {
 	SimpleLogger
-	// Fatal logs a message at FATAL level.
+	// Fatal logs a message at FATAL level and then calls os.Exit(1).
 	Fatal(format string, args ...interface{})
 }
 
-// Adapter wraps a LoggerWithCtx to provide a simplified logging interface.
-// It holds a LoggerWithCtx instance, allowing metadata (like module, trace ID)
-// to be implicitly carried with log calls without requiring context to be passed
-// as an argument to each logging method.
+// Adapter wraps a LoggerWithCtx to provide a simplified logging interface that does not
+// require passing a context on every call. It is useful for passing a pre-configured
+// logger to external modules or legacy code. The adapter is immutable; methods like
+// WithModule return a new instance with the updated context.
 type Adapter struct {
 	lw LoggerWithCtx
 }
 
-// NewAdapter creates a new Adapter instance from a given LoggerWithCtx.
-// It panics if the underlying *Logger within LoggerWithCtx is nil,
-// as a valid logger instance is required for the adapter to function.
+// NewAdapter creates a new Adapter from a given LoggerWithCtx.
+// It panics if the provided logger is nil, as a valid logger is required for operation.
 func NewAdapter(lw LoggerWithCtx) *Adapter {
 	if lw.l == nil {
-		panic("unologger: NewAdapter received LoggerWithCtx with nil *Logger")
+		panic("unologger: NewAdapter received LoggerWithCtx with a nil *Logger")
 	}
 	return &Adapter{lw: lw}
 }
 
-// NewAdapterFromContext creates a new Adapter instance by retrieving a LoggerWithCtx
-// from the provided context. If no LoggerWithCtx is found in the context,
-// it falls back to using the global logger. This is useful for creating
-// adapters in functions where only a context is available.
+// NewAdapterFromContext creates a new Adapter by retrieving a logger from the provided context.
+// If no logger is found in the context, it falls back to the global logger instance.
+// This serves as a convenient factory method for creating adapters within functions
+// where only a context is available.
 func NewAdapterFromContext(ctx context.Context) *Adapter {
-	return &Adapter{lw: GetLogger(ctx)} // GetLogger retrieves LoggerWithCtx from context or global.
+	return &Adapter{lw: GetLogger(ctx)} // GetLogger handles context extraction or fallback to global.
 }
 
-// Context returns the current context associated with this Adapter.
-// This allows inspection or further modification of the context.
+// Context returns the context currently associated with the Adapter.
+// This can be used to retrieve values or to create a new logger from it.
 func (a *Adapter) Context() context.Context {
 	return a.lw.Context()
 }
 
-// WithContext returns a new Adapter instance with the provided context.
-// The underlying *Logger remains the same, but the context for subsequent
-// log calls through this new Adapter will be updated.
+// WithContext returns a new Adapter instance using the provided context.
+// The underlying logger remains the same, but the new adapter will use the new context
+// for all subsequent log calls.
 func (a *Adapter) WithContext(ctx context.Context) *Adapter {
 	return &Adapter{lw: LoggerWithCtx{l: a.lw.l, ctx: ctx}}
 }
 
-// WithModule returns a new Adapter instance with the specified module name
-// attached to its context. This is a convenient way to categorize logs
-// by the originating module.
+// WithModule returns a new Adapter instance with the specified module name in its context.
+// This is a convenient way to categorize logs originating from a specific part of an application.
 func (a *Adapter) WithModule(module string) *Adapter {
 	lw := WithModule(a.lw.ctx, module) // Use the package-level WithModule function.
 	return &Adapter{lw: lw}
 }
 
-// WithTraceID returns a new Adapter instance with the specified trace ID
-// attached to (or overriding in) its context. This is essential for
-// distributed tracing.
+// WithTraceID returns a new Adapter instance with the specified trace ID in its context.
+// This is essential for correlating logs in distributed tracing systems.
 func (a *Adapter) WithTraceID(traceID string) *Adapter {
 	return a.WithContext(WithTraceID(a.lw.ctx, traceID)) // Use the package-level WithTraceID function.
 }
 
-// WithFlowID returns a new Adapter instance with the specified flow ID
-// attached to its context. Flow IDs can be used for custom request tracking.
+// WithFlowID returns a new Adapter instance with the specified flow ID in its context.
+// A flow ID can be used for custom tracking of requests or operations across services.
 func (a *Adapter) WithFlowID(flowID string) *Adapter {
 	return a.WithContext(WithFlowID(a.lw.ctx, flowID)) // Use the package-level WithFlowID function.
 }
 
-// WithAttrs returns a new Adapter instance with additional attributes
-// attached to its context. If a key already exists, its value will be
-// overwritten by the new attributes.
+// WithAttrs returns a new Adapter instance with additional structured fields (attributes)
+// in its context. If a key already exists, its value is overwritten.
 func (a *Adapter) WithAttrs(attrs Fields) *Adapter {
 	return a.WithContext(WithAttrs(a.lw.ctx, attrs)) // Use the package-level WithAttrs function.
 }
 
-// Debug logs a message at DEBUG level using the Adapter's internal LoggerWithCtx.
-// The context associated with the adapter is implicitly used.
+// Debug logs a message at DEBUG level using the adapter's embedded context.
 func (a *Adapter) Debug(format string, args ...interface{}) {
 	a.lw.Debug(format, args...)
 }
 
-// Info logs a message at INFO level using the Adapter's internal LoggerWithCtx.
-// The context associated with the adapter is implicitly used.
+// Info logs a message at INFO level using the adapter's embedded context.
 func (a *Adapter) Info(format string, args ...interface{}) {
 	a.lw.Info(format, args...)
 }
 
-// Warn logs a message at WARN level using the Adapter's internal LoggerWithCtx.
-// The context associated with the adapter is implicitly used.
+// Warn logs a message at WARN level using the adapter's embedded context.
 func (a *Adapter) Warn(format string, args ...interface{}) {
 	a.lw.Warn(format, args...)
 }
 
-// Error logs a message at ERROR level using the Adapter's internal LoggerWithCtx.
-// The context associated with the adapter is implicitly used.
+// Error logs a message at ERROR level using the adapter's embedded context.
 func (a *Adapter) Error(format string, args ...interface{}) {
 	a.lw.Error(format, args...)
 }
 
-// Fatal logs a message at FATAL level and terminates the process.
-// It uses the Adapter's internal LoggerWithCtx.Fatal method, which
-// attempts to gracefully close the logger before exiting.
-func (a *Adapter) Fatal(format string, args []interface{}, fields Fields) {
-	a.lw.Fatal(format, args, fields)
+// Fatal logs a message at FATAL level and then terminates the application by calling os.Exit(1).
+// It uses the adapter's embedded context.
+func (a *Adapter) Fatal(format string, args ...interface{}) {
+	a.lw.Fatal(format, args, nil)
 }

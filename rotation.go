@@ -2,9 +2,9 @@
 // This source code is licensed under the MIT License found in the LICENSE file.
 
 // Package unologger provides a flexible and feature-rich logging library for Go applications.
-// This file implements the log file rotation mechanism, which helps manage log file sizes
-// and retention. It utilizes the `lumberjack` library to rotate log files based on size,
-// age, and the number of backup files, ensuring efficient log storage and management.
+// This file implements the log rotation functionality by integrating with the
+// gopkg.in/natefinch/lumberjack.v2 library. It provides a helper function to
+// create a rotating log writer from the logger's configuration.
 
 package unologger
 
@@ -14,20 +14,20 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-// initRotationWriter creates and returns an io.Writer that handles log file rotation.
-// It uses the `lumberjack.Logger` to manage file rotation based on the provided RotationConfig.
-// Returns nil if log rotation is not enabled or if the filename is not specified in the config.
+// initRotationWriter creates and returns an io.Writer for log file rotation
+// based on the provided configuration.
+// It returns nil if rotation is disabled or if no filename is specified.
+// This function serves as an internal factory for the lumberjack.Logger.
 func initRotationWriter(cfg RotationConfig) io.Writer {
-	// Check if rotation is enabled and a filename is provided.
 	if !cfg.Enable || cfg.Filename == "" {
-		return nil // Rotation is not active without these settings.
+		return nil
 	}
-	// Initialize and return a new lumberjack.Logger instance.
+	// The lumberjack.Logger is an io.WriteCloser that handles all rotation logic.
 	return &lumberjack.Logger{
-		Filename:   cfg.Filename,   // The base filename for the log file.
-		MaxSize:    cfg.MaxSizeMB,  // Maximum size in megabytes before the log file is rotated.
-		MaxAge:     cfg.MaxAge,     // Maximum number of days to retain old log files.
-		MaxBackups: cfg.MaxBackups, // Maximum number of old log files to keep.
-		Compress:   cfg.Compress,   // Whether to compress rotated log files.
+		Filename:   cfg.Filename,
+		MaxSize:    cfg.MaxSizeMB,
+		MaxAge:     cfg.MaxAge,
+		MaxBackups: cfg.MaxBackups,
+		Compress:   cfg.Compress,
 	}
 }

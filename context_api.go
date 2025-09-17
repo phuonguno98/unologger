@@ -2,10 +2,10 @@
 // This source code is licensed under the MIT License found in the LICENSE file.
 
 // Package unologger provides a flexible and feature-rich logging library for Go applications.
-// This file defines context-related utilities for attaching and retrieving logger instances
-// and metadata (like module names, trace IDs, flow IDs, and additional attributes) from
-// context.Context objects. This enables seamless propagation of logging context across
-// function calls and goroutines.
+// This file defines context-aware helpers for propagating logging metadata. It provides
+// functions to attach and retrieve loggers, modules, trace IDs, and other attributes
+// to and from a context.Context, enabling seamless logging context across function
+// calls and goroutines.
 
 package unologger
 
@@ -17,50 +17,52 @@ import (
 	"time"
 )
 
-// WithLogger attaches a *Logger instance to the provided context and returns the new context.
-// This allows specific logger configurations to be propagated down the call chain.
+// WithLogger attaches a specific *Logger instance to the context.
+// This is an advanced feature for when a non-global logger instance needs to be
+// propagated through a specific request or goroutine chain.
 func WithLogger(ctx context.Context, l *Logger) context.Context {
-	return context.WithValue(ctx, ctxLoggerKey{}, l)
+	return context.WithValue(ctx, ctxLoggerKey, l)
 }
 
-// LoggerFromContext attempts to retrieve a *Logger instance from the given context.
-// It returns the Logger and a boolean indicating whether a Logger was found in the context.
+// LoggerFromContext retrieves a *Logger instance from the context, if one exists.
+// It returns the logger and a boolean indicating if it was found.
 func LoggerFromContext(ctx context.Context) (*Logger, bool) {
-	l, ok := ctx.Value(ctxLoggerKey{}).(*Logger)
+	l, ok := ctx.Value(ctxLoggerKey).(*Logger)
 	return l, ok
 }
 
-// WithModule attaches a module name to the context and returns a new LoggerWithCtx.
-// This is a convenient way to categorize log entries by the originating application module.
-// If the global logger is not initialized, it will be initialized with default settings.
+// WithModule returns a new LoggerWithCtx that includes the specified module name.
+// This is the standard way to create a logger for a specific application component.
+// It ensures the global logger is initialized if it hasn't been already.
 func WithModule(ctx context.Context, module string) LoggerWithCtx {
-	ensureInit() // Ensure global logger is initialized if not already.
+	ensureInit() // Ensure global logger is available.
 	ctx = context.WithValue(ctx, ctxModuleKey, module)
-	return GetLogger(ctx) // Retrieve LoggerWithCtx with the updated context.
+	return GetLogger(ctx) // Return a new context-aware logger.
 }
 
-// WithTraceID attaches or overrides a trace ID in the provided context.
-// Trace IDs are crucial for correlating log entries across distributed services.
+// WithTraceID returns a new context with the provided trace ID attached.
+// Trace IDs are essential for correlating logs across distributed services.
 func WithTraceID(ctx context.Context, traceID string) context.Context {
 	return context.WithValue(ctx, ctxTraceIDKey, traceID)
 }
 
-// WithFlowID attaches a flow ID to the provided context.
-// Flow IDs can be used for custom request tracking or business process correlation.
+// WithFlowID returns a new context with the provided flow ID attached.
+// Flow IDs can be used for custom tracking of business processes or requests.
 func WithFlowID(ctx context.Context, flowID string) context.Context {
 	return context.WithValue(ctx, ctxFlowIDKey, flowID)
 }
 
-// WithAttrs attaches additional key-value attributes (Fields) to the provided context.
-// If a key already exists in the context's attributes, its value will be overwritten.
-// This allows enriching log entries with dynamic, context-specific data.
+// WithAttrs returns a new context containing the provided key-value attributes (Fields).
+// If the context already contains attributes, the new attributes are merged with the
+// existing ones. If a key exists in both, the new value overwrites the old one.
+// This allows for enriching log entries with dynamic, request-specific data.
 func WithAttrs(ctx context.Context, attrs Fields) context.Context {
 	if attrs == nil {
 		return ctx
 	}
 	// Retrieve existing fields from context, if any.
 	existing, _ := ctx.Value(ctxFieldsKey).(Fields) // Assuming ctxFieldsKey is defined in logger_types.go
-	// Create a new map to avoid modifying the original context's map directly.
+	// Create a new map to ensure immutability.
 	newMap := make(Fields, len(existing)+len(attrs))
 	for k, v := range existing {
 		newMap[k] = v
@@ -71,15 +73,20 @@ func WithAttrs(ctx context.Context, attrs Fields) context.Context {
 	return context.WithValue(ctx, ctxFieldsKey, newMap)
 }
 
-// EnsureTraceIDCtx ensures that the provided context contains a trace ID.
-// It prioritizes extracting a trace ID from OpenTelemetry if enabled and available.
-// If no trace ID is found, a new RFC 4122 compliant UUID v4 is generated and attached.
+// EnsureTraceIDCtx ensures a trace ID is present in the context.
+//
+// It checks for a trace ID in the following order:
+//  1. An existing trace ID already in the context.
+//  2. A trace ID from an OpenTelemetry span, if OTel integration is enabled.
+//  3. A newly generated UUID v4 if none is found.
+//
+// This guarantees that logs will have a trace ID for correlation.
 func EnsureTraceIDCtx(ctx context.Context) context.Context {
-	// Check if a trace ID already exists in the context.
+	// 1. Check if a trace ID already exists.
 	if id, ok := ctx.Value(ctxTraceIDKey).(string); ok && id != "" {
 		return ctx
 	}
-	// Check for OpenTelemetry trace ID if OTEL integration is enabled.
+	// 2. Check for OpenTelemetry trace ID.
 	globalMu.RLock()
 	l := globalLogger
 	globalMu.RUnlock()
@@ -88,22 +95,21 @@ func EnsureTraceIDCtx(ctx context.Context) context.Context {
 			return context.WithValue(ctx, ctxTraceIDKey, tid)
 		}
 	}
-	// If no trace ID found, generate a new UUID.
+	// 3. Generate a new UUID as a fallback.
 	return context.WithValue(ctx, ctxTraceIDKey, newUUID())
 }
 
 // newUUID generates a new RFC 4122 compliant UUID v4 using crypto/rand.
-// This function does not require external libraries for UUID generation.
+// It panics if it fails to read from the random source, as a UUID is considered
+// essential for tracing and this failure is a critical, non-recoverable error.
 func newUUID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// In a real application, you might log this error or return an error.
-		// For simplicity in this library, we panic on failure to read random bytes.
-		panic(err)
+		panic("unologger: failed to read random bytes for UUID generation: " + err.Error())
 	}
-	// Set version (4) and variant bits according to RFC 4122.
+	// Set version (4) and variant (RFC 4122).
 	b[6] = (b[6] & 0x0f) | 0x40 // Version 4
-	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
+	b[8] = (b[8] & 0x3f) | 0x80 // Variant RFC 4122
 	return hex.EncodeToString(b[0:4]) + "-" +
 		hex.EncodeToString(b[4:6]) + "-" +
 		hex.EncodeToString(b[6:8]) + "-" +
@@ -111,14 +117,14 @@ func newUUID() string {
 		hex.EncodeToString(b[10:16])
 }
 
-// GetLogger retrieves a LoggerWithCtx from the provided context.
-// If no Logger is found in the context, it falls back to the global logger.
-// It also ensures that a module name is present in the context, defaulting to "unknown" if not set.
+// GetLogger retrieves a LoggerWithCtx from the context.
+// If a logger is not found in the context, it falls back to the global logger.
+// It also ensures a module name is present, defaulting to "unknown" if not set.
 func GetLogger(ctx context.Context) LoggerWithCtx {
-	ensureInit() // Ensure global logger is initialized if not already.
+	ensureInit() // Ensure global logger is available.
 	var base *Logger
-	// Try to get a specific logger from the context.
-	if l, ok := ctx.Value(ctxLoggerKey{}).(*Logger); ok && l != nil {
+	// Prefer the logger instance from the context if available.
+	if l, ok := ctx.Value(ctxLoggerKey).(*Logger); ok && l != nil {
 		base = l
 	} else {
 		// Fallback to the global logger.
@@ -126,50 +132,50 @@ func GetLogger(ctx context.Context) LoggerWithCtx {
 		base = globalLogger
 		globalMu.RUnlock()
 	}
-	// Ensure module name is present in the context.
-	module, _ := ctx.Value(ctxModuleKey).(string)
-	if module == "" {
-		module = "unknown"
+	// Ensure module name is present for categorization.
+	if module, ok := ctx.Value(ctxModuleKey).(string); !ok || module == "" {
+		ctx = context.WithValue(ctx, ctxModuleKey, "unknown")
 	}
-	ctx = context.WithValue(ctx, ctxModuleKey, module)
 	return LoggerWithCtx{l: base, ctx: ctx}
 }
 
-// Context returns the underlying context.Context associated with this LoggerWithCtx.
-// This allows external code to retrieve the context for further propagation or inspection.
+// Context returns the underlying context.Context of the LoggerWithCtx.
+// This allows the context to be passed along or inspected further.
 func (lw LoggerWithCtx) Context() context.Context {
 	return lw.ctx
 }
 
-// Debug logs a message at DEBUG level using the LoggerWithCtx's internal Logger
-// and its associated context.
+// WithAttrs returns a new LoggerWithCtx with additional structured fields (attributes)
+// in its context.
+func (lw LoggerWithCtx) WithAttrs(attrs Fields) LoggerWithCtx {
+	lw.ctx = WithAttrs(lw.ctx, attrs)
+	return lw
+}
+
+// Debug logs a formatted message at DEBUG level using the logger's context.
 func (lw LoggerWithCtx) Debug(format string, args ...interface{}) {
 	lw.l.log(lw.ctx, DEBUG, format, args...)
 }
 
-// Info logs a message at INFO level using the LoggerWithCtx's internal Logger
-// and its associated context.
+// Info logs a formatted message at INFO level using the logger's context.
 func (lw LoggerWithCtx) Info(format string, args ...interface{}) {
 	lw.l.log(lw.ctx, INFO, format, args...)
 }
 
-// Warn logs a message at WARN level using the LoggerWithCtx's internal Logger
-// and its associated context.
+// Warn logs a formatted message at WARN level using the logger's context.
 func (lw LoggerWithCtx) Warn(format string, args ...interface{}) {
 	lw.l.log(lw.ctx, WARN, format, args...)
 }
 
-// Error logs a message at ERROR level using the LoggerWithCtx's internal Logger
-// and its associated context.
+// Error logs a formatted message at ERROR level using the logger's context.
 func (lw LoggerWithCtx) Error(format string, args ...interface{}) {
 	lw.l.log(lw.ctx, ERROR, format, args...)
 }
 
-// Fatal logs a message at FATAL level, attempts to close the logger,
-// and then exits the process with status 1.
-// It uses the LoggerWithCtx's internal Logger and its associated context.
-func (lw LoggerWithCtx) Fatal(format string, args []interface{}, fields Fields) {
-	lw.l.log(lw.ctx, FATAL, format, args, fields)
+// Fatal logs a formatted message at FATAL level, then attempts to flush logs
+// and terminates the application with exit code 1.
+func (lw LoggerWithCtx) Fatal(format string, args ...interface{}) {
+	lw.l.log(lw.ctx, FATAL, format, args...)
 	_ = CloseDetached(lw.l, 2*time.Second) // Assuming CloseDetached exists
 	os.Exit(1)
 }

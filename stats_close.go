@@ -2,8 +2,9 @@
 // This source code is licensed under the MIT License found in the LICENSE file.
 
 // Package unologger provides a flexible and feature-rich logging library for Go applications.
-// This file offers functionalities for retrieving logger statistics and for gracefully
-// closing logger instances (both global and detached).
+// This file contains functions for gracefully shutting down a logger instance and for
+// retrieving detailed runtime statistics, which are essential for monitoring the
+// logger's health and performance.
 
 package unologger
 
@@ -15,132 +16,118 @@ import (
 	"time"
 )
 
-// Stats returns comprehensive statistics for the global logger.
-// It includes counts for dropped, written, and batched log entries,
-// as well as errors encountered during writing and hook execution.
-// It also provides the current queue length, detailed writer errors, and a log of hook errors.
+// Stats returns a snapshot of the current performance and error statistics for the global logger.
+// It is safe for concurrent use.
+//
+// Returned values:
+//   - dropped: Total number of log entries dropped because the queue was full (in non-blocking mode).
+//   - written: Total number of log entries successfully passed to the formatter.
+//   - batches: Total number of batches processed by the workers.
+//   - writeErrs: Total number of errors encountered when writing to any output.
+//   - hookErrs: Total number of errors or panics encountered during hook execution.
+//   - queueLen: The number of log entries currently waiting in the processing queue.
+//   - writerErrs: A map of writer names to their individual error counts.
+//   - hookErrLog: A slice containing recent hook errors (up to a configured maximum).
 func Stats() (dropped, written, batches, writeErrs, hookErrs int64, queueLen int, writerErrs map[string]int64, hookErrLog []HookError) {
-	globalMu.RLock()
-	l := globalLogger
-	globalMu.RUnlock()
+	l := GlobalLogger() // This ensures the logger is initialized.
 	if l == nil {
-		// Return zero values if the global logger is not initialized.
 		return 0, 0, 0, 0, 0, 0, nil, nil
 	}
-	// Retrieve statistics from the global logger instance.
-	return l.droppedCount.Load(),
-		l.writtenCount.Load(),
-		l.batchCount.Load(),
-		l.writeErrCount.Load(),
-		l.hookErrCount.Load(),
-		len(l.ch), // Current number of entries in the main processing channel.
-		l.getWriterErrorStats(),
-		l.GetHookErrors() // Use the public GetHookErrors method.
+	return StatsDetached(l)
 }
 
-// StatsDetached returns comprehensive statistics for a specific detached logger instance.
-// It provides the same metrics as Stats() but for a non-global logger.
+// StatsDetached returns a snapshot of the current performance and error statistics for a specific logger instance.
+// See the documentation for `Stats()` for a description of the returned values.
 func StatsDetached(l *Logger) (dropped, written, batches, writeErrs, hookErrs int64, queueLen int, writerErrs map[string]int64, hookErrLog []HookError) {
 	if l == nil {
-		// Return zero values if the provided logger is nil.
 		return 0, 0, 0, 0, 0, 0, nil, nil
 	}
-	// Retrieve statistics from the provided logger instance.
 	return l.droppedCount.Load(),
 		l.writtenCount.Load(),
 		l.batchCount.Load(),
 		l.writeErrCount.Load(),
 		l.hookErrCount.Load(),
-		len(l.ch), // Current number of entries in the main processing channel.
+		len(l.ch),
 		l.getWriterErrorStats(),
-		l.GetHookErrors() // Use the public GetHookErrors method.
+		l.GetHookErrors()
 }
 
-// Close gracefully shuts down the global logger.
-// It stops accepting new log entries, waits for all pending log entries to be processed,
-// stops hook workers, and closes all associated writers.
-// The `timeout` parameter specifies the maximum time to wait for all operations to complete.
-// If `timeout` is 0 or less, it waits indefinitely.
-// This function is idempotent; calling it multiple times will not cause errors.
-// It returns an error if the shutdown process times out.
+// Close gracefully shuts down the global logger, ensuring all buffered logs are written.
+// It's crucial to call this at application exit to prevent log loss.
+//
+// The process is:
+//  1. Stop accepting new log entries.
+//  2. Wait for all worker goroutines to finish processing the queue.
+//  3. Close all output writers.
+//
+// The timeout parameter specifies the maximum time to wait for this process.
+// This function is idempotent; it is safe to call multiple times.
 func Close(timeout time.Duration) error {
-	globalMu.RLock()
-	l := globalLogger
-	globalMu.RUnlock()
-	if l == nil || l.closed.IsTrue() {
-		// If logger is nil or already closed, return immediately.
+	l := GlobalLogger()
+	if l == nil || l.closed.Load() {
 		return nil
 	}
-	return closeLogger(l, timeout) // Delegate to the common closeLogger function.
+	return closeLogger(l, timeout)
 }
 
-// CloseDetached gracefully shuts down a specific detached logger instance.
-// It follows the same shutdown procedure as Close() but applies only to the provided logger.
-// It returns an error if the shutdown process times out.
+// CloseDetached gracefully shuts down a specific logger instance.
+// See the documentation for `Close()` for details on the shutdown process.
 func CloseDetached(l *Logger, timeout time.Duration) error {
-	if l == nil || l.closed.IsTrue() {
-		// If logger is nil or already closed, return immediately.
+	if l == nil || l.closed.Load() {
 		return nil
 	}
-	return closeLogger(l, timeout) // Delegate to the common closeLogger function.
+	return closeLogger(l, timeout)
 }
 
-// closeLogger performs the common shutdown logic for both global and detached loggers.
-// It ensures that the logger is closed only once.
+// closeLogger contains the core shutdown logic for any logger instance.
 func closeLogger(l *Logger, timeout time.Duration) error {
-	// Use TrySetTrue to ensure the close operation is performed only once.
+	// Atomically set the `closed` flag. If it was already true, another goroutine
+	// is already handling the shutdown, so we can return.
 	if !l.closed.TrySetTrue() {
-		return nil // Already closed or another goroutine is closing it.
+		return nil
 	}
 
-	close(l.ch) // Close the main log entry channel to signal workers to stop accepting new entries.
+	// Close the main channel. This signals the worker loops to stop accepting
+	// new entries and to exit once they have processed all remaining entries.
+	close(l.ch)
 
-	done := make(chan struct{}) // Channel to signal when all workers have finished.
+	done := make(chan struct{})
 	go func() {
-		l.wg.Wait() // Wait for all log processing worker goroutines to complete.
-		close(done) // Signal completion.
+		// Wait for all worker goroutines to finish their work.
+		l.wg.Wait()
+		// After workers are done, we can safely close the hooks and writers.
+		l.closeHookRunner()
+		l.closeAllWriters()
+		close(done)
 	}()
 
 	if timeout <= 0 {
-		// Wait indefinitely for workers to finish.
+		// Wait indefinitely for shutdown to complete.
 		<-done
-		// Workers have stopped, now close hook runner and all writers.
-		l.closeHookRunner()
-		l.closeAllWriters()
-		// Print any accumulated writer errors to stderr.
-		statsStr := l.formatWriterErrorStats()
-		if statsStr != "no writer errors" {
-			_, _ = fmt.Fprintln(os.Stderr, statsStr)
-		}
+		l.printFinalStats(os.Stderr)
 		return nil
 	}
 
-	// Wait for workers to finish or timeout.
+	// Wait for shutdown to complete or for the timeout to expire.
 	select {
 	case <-done:
-		// Workers finished within the timeout.
-		l.closeHookRunner()
-		l.closeAllWriters()
-		statsStr := l.formatWriterErrorStats()
-		if statsStr != "no writer errors" {
-			_, _ = fmt.Fprintln(os.Stderr, statsStr)
-		}
+		// Shutdown completed successfully within the timeout.
+		l.printFinalStats(os.Stderr)
 		return nil
 	case <-time.After(timeout):
-		// Timeout occurred.
-		return fmt.Errorf("logger: close timeout after %s", timeout)
+		// Timeout expired before shutdown could complete.
+		return fmt.Errorf("unologger: close timed out after %s", timeout)
 	}
 }
 
-// incWriterErr increments the error count for a specific writer.
-// This is an internal helper function.
+// incWriterErr is a thread-safe method to increment the error count for a specific writer.
 func (l *Logger) incWriterErr(name string) {
+	// This is a common pattern for incrementing a value in a sync.Map.
 	val, _ := l.writerErrs.LoadOrStore(name, int64(0))
 	l.writerErrs.Store(name, val.(int64)+1)
 }
 
-// getWriterErrorStats returns a map of writer names to their error counts.
-// This is an internal helper function for statistics.
+// getWriterErrorStats safely retrieves a snapshot of the writer error counts.
 func (l *Logger) getWriterErrorStats() map[string]int64 {
 	stats := make(map[string]int64)
 	l.writerErrs.Range(func(key, value any) bool {
@@ -150,12 +137,11 @@ func (l *Logger) getWriterErrorStats() map[string]int64 {
 	return stats
 }
 
-// formatWriterErrorStats formats the writer error statistics into a human-readable string.
-// This is an internal helper function.
+// formatWriterErrorStats creates a summary string of writer errors.
 func (l *Logger) formatWriterErrorStats() string {
 	stats := l.getWriterErrorStats()
 	if len(stats) == 0 {
-		return "no writer errors"
+		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString("unologger: writer errors: ")
@@ -170,10 +156,16 @@ func (l *Logger) formatWriterErrorStats() string {
 	return sb.String()
 }
 
-// closeAllWriters closes all registered writers (stdout, stderr, extra, rotation).
-// This is an internal helper function called during logger shutdown.
+// printFinalStats prints the writer error summary to the given writer if there are any errors.
+func (l *Logger) printFinalStats(w io.Writer) {
+	if statsStr := l.formatWriterErrorStats(); statsStr != "" {
+		fmt.Fprintln(w, statsStr)
+	}
+}
+
+// closeAllWriters iterates through and closes all configured writers that implement io.Closer.
 func (l *Logger) closeAllWriters() {
-	l.outputsMu.Lock() // Acquire lock to safely iterate and close writers.
+	l.outputsMu.Lock()
 	defer l.outputsMu.Unlock()
 
 	// Close standard output if it's a Closer (e.g., a file).
@@ -189,7 +181,7 @@ func (l *Logger) closeAllWriters() {
 		}
 	}
 
-	// Close extra writers.
+	// Close any extra writers.
 	for _, s := range l.extraW {
 		if s.Closer != nil {
 			if err := s.Closer.Close(); err != nil {
@@ -197,13 +189,13 @@ func (l *Logger) closeAllWriters() {
 			}
 		}
 	}
-	l.extraW = nil // Clear the slice after closing.
+	l.extraW = nil
 
-	// Close rotation writer.
+	// Close the rotation writer.
 	if l.rotationSink != nil && l.rotationSink.Closer != nil {
 		if err := l.rotationSink.Closer.Close(); err != nil {
 			l.incWriterErr(l.rotationSink.Name)
 		}
 	}
-	l.rotationSink = nil // Clear the rotation sink.
+	l.rotationSink = nil
 }

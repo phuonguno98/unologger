@@ -51,7 +51,8 @@ Example Usage:
 		unologger.InitLoggerWithConfig(cfg)
 		defer func() {
 			if err := unologger.Close(5 * time.Second); err != nil {
-				fmt.Printf("Error closing logger: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Error closing logger: %v
+", err)
 			}
 		}()
 
