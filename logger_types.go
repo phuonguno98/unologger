@@ -66,12 +66,16 @@ const (
 	ctxModuleKey  ctxKey = "module"
 	ctxTraceIDKey ctxKey = "trace_id"
 	ctxFlowIDKey  ctxKey = "flow_id"
-	ctxAttrsKey   ctxKey = "attrs"
 )
 
 //
 // ===== Cấu hình & chính sách =====
 //
+
+// Formatter là interface để định dạng log entry thành byte slice.
+type Formatter interface {
+	Format(ev HookEvent) ([]byte, error)
+}
 
 // RetryPolicy cấu hình retry khi ghi log thất bại.
 type RetryPolicy struct {
@@ -122,6 +126,7 @@ type Config struct {
 	MinLevel        Level             // Cấp độ log tối thiểu
 	Timezone        string            // Múi giờ
 	JSON            bool              // Bật/tắt định dạng JSON
+	Formatter       Formatter         // NEW: Bộ định dạng log tùy chỉnh
 	Buffer          int               // Kích thước buffer channel log
 	Workers         int               // Số lượng worker xử lý log
 	NonBlocking     bool              // Chế độ non-blocking khi enqueue log
@@ -204,6 +209,8 @@ type Logger struct {
 	outputsMu sync.RWMutex
 	// NEW: guard timezone location read/write
 	locMu sync.RWMutex
+
+	formatter Formatter // NEW: Bộ định dạng log
 
 	// Pipeline
 	ch          chan *logEntry

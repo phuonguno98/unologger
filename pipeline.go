@@ -8,8 +8,8 @@
 package unologger
 
 import (
-	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 )
 
@@ -115,188 +115,59 @@ func (l *Logger) workerLoop() {
 
 // processBatch xử lý một batch logEntry, hỗ trợ JSON/text và route stderr cho lỗi.
 func (l *Logger) processBatch(entries []*logEntry) {
-	if l.jsonFmtFlag.Load() { // NEW: dùng cờ atomic
-		// Encode từng entry và tách theo isError để route đúng stderr/stdout
-		bufStd := make([][]byte, 0, len(entries))
-		bufErr := make([][]byte, 0, len(entries))
-		for _, e := range entries {
-			b := l.formatJSONEntry(e)
-			if e.lvl >= ERROR {
-				bufErr = append(bufErr, b)
-			} else {
-				bufStd = append(bufStd, b)
-			}
-			l.recycleEntry(e)
+	for _, e := range entries {
+		l.writtenCount.Add(1)
+
+		// Đọc location an toàn
+		l.locMu.RLock()
+		loc := l.loc
+		l.locMu.RUnlock()
+
+		module, _ := e.ctx.Value(ctxModuleKey).(string)
+		traceID, _ := e.ctx.Value(ctxTraceIDKey).(string)
+		flowID, _ := e.ctx.Value(ctxFlowIDKey).(string)
+
+		// Lấy fields từ context và merge với fields của entry
+		ctxFields, _ := e.ctx.Value(ctxFieldsKey).(Fields)
+		mergedFields := make(Fields)
+		for k, v := range ctxFields {
+			mergedFields[k] = v
+		}
+		for k, v := range e.fields {
+			mergedFields[k] = v
 		}
 
-		if len(bufStd) > 0 {
-			total := 0
-			for _, b := range bufStd {
-				total += len(b)
-			}
-			out := make([]byte, 0, total)
-			for _, b := range bufStd {
-				out = append(out, b...)
-			}
-			l.writeToAll(out, false)
+		msg := fmt.Sprintf(e.tmpl, e.args...)
+		msg = l.applyMasking(msg, l.jsonFmtFlag.Load()) // Apply masking based on JSON mode
+
+		hookEv := HookEvent{
+			Time:     e.t.In(loc),
+			Level:    e.lvl,
+			Module:   module,
+			Message:  msg,
+			TraceID:  traceID,
+			FlowID:   flowID,
+			Attrs:    nil,          // Attrs không còn được sử dụng trực tiếp
+			Fields:   mergedFields, // Sử dụng mergedFields
+			JSONMode: l.jsonFmtFlag.Load(),
+		}
+		l.enqueueHook(hookEv)
+
+		// Format log entry
+		b, err := l.formatter.Format(hookEv)
+		if err != nil {
+			// Handle formatter error, maybe log to stderr directly
+			_, _ = fmt.Fprintf(os.Stderr, "unologger: formatter error: %v\n", err)
+			l.writeErrCount.Add(1)
+			// Continue to next entry or return
+			continue
 		}
 
-		if len(bufErr) > 0 {
-			total := 0
-			for _, b := range bufErr {
-				total += len(b)
-			}
-			out := make([]byte, 0, total)
-			for _, b := range bufErr {
-				out = append(out, b...)
-			}
-			l.writeToAll(out, true)
-		}
-	} else {
-		for _, e := range entries {
-			l.processTextEntry(e)
-			l.recycleEntry(e)
-		}
+		// ERROR và FATAL đều ghi ra stderr
+		isErr := e.lvl >= ERROR
+		l.writeToAll(b, isErr)
+		l.recycleEntry(e)
 	}
-}
-
-// processTextEntry format, mask, gửi hook và ghi ra output text.
-func (l *Logger) processTextEntry(e *logEntry) {
-	l.writtenCount.Add(1)
-
-	// Đọc location an toàn
-	l.locMu.RLock()
-	loc := l.loc
-	l.locMu.RUnlock()
-
-	module, _ := e.ctx.Value(ctxModuleKey).(string)
-	traceID, _ := e.ctx.Value(ctxTraceIDKey).(string)
-	flowID, _ := e.ctx.Value(ctxFlowIDKey).(string)
-
-	// Lấy fields từ context và merge với fields của entry
-	ctxFields, _ := e.ctx.Value(ctxFieldsKey).(Fields)
-	mergedFields := make(Fields)
-	for k, v := range ctxFields {
-		mergedFields[k] = v
-	}
-	for k, v := range e.fields {
-		mergedFields[k] = v
-	}
-
-	msg := fmt.Sprintf(e.tmpl, e.args...)
-	msg = l.applyMasking(msg, false)
-
-	hookEv := HookEvent{
-		Time:     e.t.In(loc),
-		Level:    e.lvl,
-		Module:   module,
-		Message:  msg,
-		TraceID:  traceID,
-		FlowID:   flowID,
-		Attrs:    nil,          // Attrs không còn được sử dụng trực tiếp
-		Fields:   mergedFields, // Sử dụng mergedFields
-		JSONMode: false,
-	}
-	l.enqueueHook(hookEv)
-
-	// ERROR và FATAL đều ghi ra stderr
-	isErr := e.lvl >= ERROR
-	ts := e.t.In(loc).Format("2006-01-02 15:04:05.000 MST")
-	meta := ""
-	if l.enableOTEL.Load() {
-		if tsid := formatTraceSpanID(e.ctx); tsid != "" {
-			meta += fmt.Sprintf(" trace/span=%s", tsid)
-		}
-	} else if traceID != "" {
-		meta += fmt.Sprintf(" trace=%s", traceID)
-	}
-	if flowID != "" {
-		meta += fmt.Sprintf(" flow=%s", flowID)
-	}
-	if len(mergedFields) > 0 {
-		meta += fmt.Sprintf(" fields=%v", mergedFields)
-	}
-
-	line := fmt.Sprintf("%s [%s] (%s)%s %s\n", ts, e.lvl.String(), module, meta, msg)
-
-	l.writeToAll([]byte(line), isErr)
-}
-
-// formatJSONEntry format, mask, gửi hook và trả về JSON-encoded bytes (có newline).
-func (l *Logger) formatJSONEntry(e *logEntry) []byte {
-	l.writtenCount.Add(1)
-
-	// Đọc location an toàn
-	l.locMu.RLock()
-	loc := l.loc
-	l.locMu.RUnlock()
-
-	module, _ := e.ctx.Value(ctxModuleKey).(string)
-	traceID, _ := e.ctx.Value(ctxTraceIDKey).(string)
-	flowID, _ := e.ctx.Value(ctxFlowIDKey).(string)
-
-	// Lấy fields từ context và merge với fields của entry
-	ctxFields, _ := e.ctx.Value(ctxFieldsKey).(Fields)
-	mergedFields := make(Fields)
-	for k, v := range ctxFields {
-		mergedFields[k] = v
-	}
-	for k, v := range e.fields {
-		mergedFields[k] = v
-	}
-
-	msg := fmt.Sprintf(e.tmpl, e.args...)
-	msg = l.applyMasking(msg, true)
-
-	hookEv := HookEvent{
-		Time:     e.t.In(loc),
-		Level:    e.lvl,
-		Module:   module,
-		Message:  msg,
-		TraceID:  traceID,
-		FlowID:   flowID,
-		Attrs:    nil,          // Attrs không còn được sử dụng trực tiếp
-		Fields:   mergedFields, // Sử dụng mergedFields
-		JSONMode: true,
-	}
-	l.enqueueHook(hookEv)
-
-	// Struct giữ thứ tự field như khai báo
-	type jsonEntry struct {
-		Time      string            `json:"time"`
-		Level     string            `json:"level"`
-		Module    string            `json:"module,omitempty"`
-		TraceSpan string            `json:"trace_span,omitempty"`
-		TraceID   string            `json:"trace_id,omitempty"`
-		FlowID    string            `json:"flow_id,omitempty"`
-		Attrs     map[string]string `json:"attrs,omitempty"`
-		Message   string            `json:"message"`
-		Fields    Fields            `json:"fields,omitempty"` // NEW: Thêm trường fields
-	}
-
-	entry := jsonEntry{
-		Time:    e.t.In(loc).Format(time.RFC3339Nano),
-		Level:   e.lvl.String(),
-		Module:  module,
-		Message: msg,
-		Fields:  mergedFields, // NEW: Gán mergedFields
-	}
-
-	if l.enableOTEL.Load() {
-		if tsid := formatTraceSpanID(e.ctx); tsid != "" {
-			entry.TraceSpan = tsid
-		}
-	} else if traceID != "" {
-		entry.TraceID = traceID
-	}
-
-	if flowID != "" {
-		entry.FlowID = flowID
-	}
-
-	b, _ := json.Marshal(entry)
-	b = append(b, '\n')
-	return b
 }
 
 // recycleEntry làm sạch tham chiếu trong logEntry trước khi trả về pool.

@@ -42,7 +42,7 @@ func main() {
 		Retry:       unologger.RetryPolicy{MaxRetries: 2, Backoff: 80 * time.Millisecond, Exponential: true, Jitter: 20 * time.Millisecond},
 		Rotation: unologger.RotationConfig{
 			Enable:     true,
-			Filename:   "app.log",
+			Filename:   "example/app.log",
 			MaxSizeMB:  5,
 			MaxBackups: 2,
 			MaxAge:     7,

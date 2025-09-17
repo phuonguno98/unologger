@@ -107,11 +107,21 @@ func newLoggerFromConfig(cfg Config) *Logger {
 		cfg.Hook.Queue = 1024
 	}
 
+	var formatter Formatter
+	if cfg.Formatter != nil {
+		formatter = cfg.Formatter
+	} else if cfg.JSON {
+		formatter = &JSONFormatter{}
+	} else {
+		formatter = &TextFormatter{}
+	}
+
 	l := &Logger{
 		stdOut:         cfg.Stdout,
 		errOut:         cfg.Stderr,
 		loc:            loc,
 		jsonFmt:        cfg.JSON,
+		formatter:      formatter, // NEW: Gán formatter
 		ch:             make(chan *logEntry, cfg.Buffer),
 		workers:        cfg.Workers,
 		nonBlocking:    cfg.NonBlocking,

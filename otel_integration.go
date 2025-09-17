@@ -37,17 +37,6 @@ func extractOTELSpanID(ctx context.Context) string {
 	return ""
 }
 
-// formatTraceSpanID trả về chuỗi kết hợp trace_id và span_id (nếu có).
-// Ví dụ: "traceid/spanid" hoặc chỉ "traceid" nếu không có span_id.
-func formatTraceSpanID(ctx context.Context) string {
-	tid := extractOTELTraceID(ctx)
-	sid := extractOTELSpanID(ctx)
-	if tid != "" && sid != "" {
-		return tid + "/" + sid
-	}
-	return tid
-}
-
 // AttachOTELTrace gắn trace_id và span_id từ OTel vào context log.
 // Nếu không có trace hợp lệ, trả về nguyên context ban đầu.
 func AttachOTELTrace(ctx context.Context) context.Context {
