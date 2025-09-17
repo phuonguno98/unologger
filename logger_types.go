@@ -4,6 +4,7 @@
 // Package unologger provides a flexible and feature-rich logging library for Go applications.
 // It supports structured logging, dynamic configuration, data masking, log rotation,
 // and OpenTelemetry integration.
+
 package unologger
 
 import (
@@ -129,7 +130,7 @@ type Config struct {
 	RegexPatternMap map[string]string // Map of regex patterns to replacement strings for masking.
 	JSONFieldRules  []MaskFieldRule   // Field-level masking rules for JSON logs.
 	Rotation        RotationConfig    // Log file rotation configuration.
-	EnableOTEL      bool              // Whether OpenTelemetry integration is enabled.
+	EnableOTel      bool              // Whether OpenTelemetry integration is enabled.
 }
 
 // Fields is a map for custom key-value pairs in log entries.
@@ -174,9 +175,9 @@ type writerSink struct {
 
 // Logger manages the entire logging pipeline, including hooks, masking, outputs, and statistics.
 type Logger struct {
-	stdOut io.Writer // Standard output writer.
-	errOut io.Writer // Error output writer.
-	extraW []writerSink // Additional writers.
+	stdOut io.Writer      // Standard output writer.
+	errOut io.Writer      // Error output writer.
+	extraW []writerSink   // Additional writers.
 	loc    *time.Location // Timezone location for timestamps.
 
 	jsonFmt     bool       // Legacy JSON format flag, kept for internal compatibility.
@@ -202,25 +203,25 @@ type Logger struct {
 	regexRules     []MaskRuleRegex // Regex-based masking rules.
 	jsonFieldRules []MaskFieldRule // Field-level masking rules for JSON logs.
 
-	hooks       []HookFunc    // List of hook functions.
-	hookAsync   bool          // Whether hooks run asynchronously.
-	hookWorkers int           // Number of worker goroutines for hooks.
-	hookQueue   int           // Size of the hook event queue.
-	hookTimeout time.Duration // Timeout for individual hook execution.
-	hookQueueCh chan hookTask // Channel for enqueuing hook tasks.
+	hooks       []HookFunc     // List of hook functions.
+	hookAsync   bool           // Whether hooks run asynchronously.
+	hookWorkers int            // Number of worker goroutines for hooks.
+	hookQueue   int            // Size of the hook event queue.
+	hookTimeout time.Duration  // Timeout for individual hook execution.
+	hookQueueCh chan hookTask  // Channel for enqueuing hook tasks.
 	hookWg      sync.WaitGroup // WaitGroup for asynchronous hook workers.
-	hookErrLog  []HookError   // Buffer to store recent hook errors.
-	hookErrMu   sync.Mutex    // Guards access to hookErrLog.
-	hooksMu     sync.RWMutex  // Guards access to l.hooks.
-	hookErrMax  int           // Maximum number of hook errors to retain in hookErrLog.
+	hookErrLog  []HookError    // Buffer to store recent hook errors.
+	hookErrMu   sync.Mutex     // Guards access to hookErrLog.
+	hooksMu     sync.RWMutex   // Guards access to l.hooks.
+	hookErrMax  int            // Maximum number of hook errors to retain in hookErrLog.
 
-	enableOTEL atomicBool // Atomic flag to enable/disable OpenTelemetry integration dynamically.
+	enableOTel atomicBool // Atomic flag to enable/disable OpenTelemetry integration dynamically.
 
 	rotation     RotationConfig // Log file rotation configuration.
 	rotationSink *writerSink    // Internal writer for log rotation (if enabled).
 
-	minLevel atomicLevel // Atomic minimum log level for dynamic changes.
-	closed   atomicBool  // Atomic flag indicating if the logger is closed.
+	minLevel atomicLevel    // Atomic minimum log level for dynamic changes.
+	closed   atomicBool     // Atomic flag indicating if the logger is closed.
 	wg       sync.WaitGroup // WaitGroup for log processing workers.
 
 	writtenCount  atomicI64 // Counter for successfully written log entries.
@@ -242,12 +243,12 @@ type LoggerWithCtx struct {
 
 // logEntry represents an internal log record before formatting.
 type logEntry struct {
-	lvl    Level         // Log level.
+	lvl    Level           // Log level.
 	ctx    context.Context // Context associated with the log.
-	t      time.Time     // Timestamp of the log.
-	tmpl   string        // Format string for the message.
-	args   []any         // Arguments for the format string.
-	fields Fields        // Custom key-value fields.
+	t      time.Time       // Timestamp of the log.
+	tmpl   string          // Format string for the message.
+	args   []any           // Arguments for the format string.
+	fields Fields          // Custom key-value fields.
 }
 
 // logBatch groups multiple logEntry instances for batch processing.

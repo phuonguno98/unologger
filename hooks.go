@@ -5,6 +5,7 @@
 // This file manages the hook system, allowing custom functions to be injected into the
 // logging pipeline. Hooks can execute synchronously or asynchronously, support timeouts,
 // and are designed to be panic-safe. They apply to all log levels (DEBUG, INFO, WARN, ERROR, FATAL).
+
 package unologger
 
 import (

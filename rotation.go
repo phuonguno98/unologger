@@ -5,6 +5,7 @@
 // This file implements the log file rotation mechanism, which helps manage log file sizes
 // and retention. It utilizes the `lumberjack` library to rotate log files based on size,
 // age, and the number of backup files, ensuring efficient log storage and management.
+
 package unologger
 
 import (

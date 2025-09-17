@@ -6,6 +6,7 @@
 // extract trace IDs and span IDs from the `context.Context` and attach them to log entries.
 // This integration is crucial for correlating logs with tracing data, enabling better
 // observability and debugging in distributed systems.
+
 package unologger
 
 import (
@@ -14,42 +15,42 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// extractOTELTraceID attempts to extract the trace ID from the OpenTelemetry span
+// extractOTelTraceID attempts to extract the trace ID from the OpenTelemetry span
 // context within the provided `context.Context`.
 // It returns the trace ID as a string if found and valid, otherwise returns an empty string.
-func extractOTELTraceID(ctx context.Context) string {
+func extractOTelTraceID(ctx context.Context) string {
 	// Retrieve the current span from the context.
 	if span := trace.SpanFromContext(ctx); span != nil {
 		sc := span.SpanContext() // Get the SpanContext.
-		if sc.HasTraceID() {    // Check if the SpanContext has a valid TraceID.
+		if sc.HasTraceID() {     // Check if the SpanContext has a valid TraceID.
 			return sc.TraceID().String() // Return the string representation of the TraceID.
 		}
 	}
 	return "" // No valid TraceID found in the context.
 }
 
-// extractOTELSpanID attempts to extract the span ID from the OpenTelemetry span
+// extractOTelSpanID attempts to extract the span ID from the OpenTelemetry span
 // context within the provided `context.Context`.
 // It returns the span ID as a string if found and valid, otherwise returns an empty string.
-func extractOTELSpanID(ctx context.Context) string {
+func extractOTelSpanID(ctx context.Context) string {
 	// Retrieve the current span from the context.
 	if span := trace.SpanFromContext(ctx); span != nil {
 		sc := span.SpanContext() // Get the SpanContext.
-		if sc.HasSpanID() {     // Check if the SpanContext has a valid SpanID.
+		if sc.HasSpanID() {      // Check if the SpanContext has a valid SpanID.
 			return sc.SpanID().String() // Return the string representation of the SpanID.
 		}
 	}
 	return "" // No valid SpanID found in the context.
 }
 
-// AttachOTELTrace attaches the OpenTelemetry trace ID and span ID (if available)
+// AttachOTelTrace attaches the OpenTelemetry trace ID and span ID (if available)
 // from the provided `context.Context` to the log context.
 // If no valid trace ID is found in the OTel context, the original context is returned unchanged.
 // The trace ID is attached using WithTraceID, and the span ID is attached as a custom attribute
 // named "span_id" using WithAttrs, allowing hooks or writers to utilize it.
-func AttachOTELTrace(ctx context.Context) context.Context {
-	tid := extractOTELTraceID(ctx) // Extract Trace ID.
-	sid := extractOTELSpanID(ctx)  // Extract Span ID.
+func AttachOTelTrace(ctx context.Context) context.Context {
+	tid := extractOTelTraceID(ctx) // Extract Trace ID.
+	sid := extractOTelSpanID(ctx)  // Extract Span ID.
 
 	if tid == "" {
 		return ctx // If no valid Trace ID, return the original context.

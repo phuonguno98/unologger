@@ -5,6 +5,7 @@
 // This file implements the core log processing pipeline, which includes enqueuing,
 // batching, formatting, applying hooks, data masking, and writing log entries to various outputs.
 // It supports all log levels: DEBUG, INFO, WARN, ERROR, FATAL.
+
 package unologger
 
 import (
@@ -38,7 +39,7 @@ func (l *Logger) enqueue(e *logEntry) {
 				case old := <-l.ch:
 					if old != nil {
 						l.droppedCount.Add(1) // Increment dropped count.
-						poolEntry.Put(old)   // Return old entry to pool.
+						poolEntry.Put(old)    // Return old entry to pool.
 					}
 				default:
 					// No old entry to drop immediately, proceed to try enqueuing.
@@ -77,7 +78,7 @@ func (l *Logger) workerLoop() {
 	// flush is a helper function to process the current batch.
 	flush := func() {
 		if len(batch.items) > 0 {
-			l.processBatch(batch.items) // Process the collected log entries.
+			l.processBatch(batch.items)   // Process the collected log entries.
 			batch.items = batch.items[:0] // Clear the batch for next use.
 			batch.created = time.Now()    // Reset batch creation time.
 			l.batchCount.Add(1)           // Increment batch counter.
@@ -163,7 +164,7 @@ func (l *Logger) processBatch(entries []*logEntry) {
 
 		// Format the log message and apply masking.
 		msg := fmt.Sprintf(e.tmpl, e.args...)
-		jsonMode := l.jsonFmtFlag.Load() // Get current JSON format setting.
+		jsonMode := l.jsonFmtFlag.Load()    // Get current JSON format setting.
 		msg = l.applyMasking(msg, jsonMode) // Apply masking based on JSON mode.
 
 		// Create a HookEvent for processing by hooks.

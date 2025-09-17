@@ -4,6 +4,7 @@
 // Package unologger provides a flexible and feature-rich logging library for Go applications.
 // This file offers functionalities for retrieving logger statistics and for gracefully
 // closing logger instances (both global and detached).
+
 package unologger
 
 import (

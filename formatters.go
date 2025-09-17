@@ -5,6 +5,7 @@
 // This file defines default formatters for log entries: TextFormatter for human-readable
 // plain text output and JSONFormatter for structured JSON output.
 // These formatters implement the Formatter interface defined in logger_types.go.
+
 package unologger
 
 import (
@@ -23,8 +24,7 @@ type TextFormatter struct{}
 // Metadata (trace, flow, attrs, fields) is appended if present.
 func (f *TextFormatter) Format(ev HookEvent) ([]byte, error) {
 	// Format the timestamp with milliseconds and timezone.
-	ts := ev.Time.Format("2006-01-02 15:04:05.000 MST")
-
+	ts := ev.Time.Format(time.RFC3339) // Example: 2024-06-15T14:23:45Z07:00.
 	// Build metadata string from trace ID, flow ID, attributes, and fields.
 	meta := ""
 	if ev.TraceID != "" {
@@ -55,19 +55,19 @@ type JSONFormatter struct{}
 func (f *JSONFormatter) Format(ev HookEvent) ([]byte, error) {
 	// Define an anonymous struct to control the JSON output structure and field names.
 	type jsonEntry struct {
-		Time    string            `json:"time"`              // Timestamp in RFC3339Nano format.
-		Level   string            `json:"level"`             // Log level string (e.g., "INFO").
-		Module  string            `json:"module,omitempty"`  // Module name, omitted if empty.
-		TraceID string            `json:"trace_id,omitempty"`// Trace ID, omitted if empty.
-		FlowID  string            `json:"flow_id,omitempty"` // Flow ID, omitted if empty.
-		Attrs   map[string]string `json:"attrs,omitempty"`   // Additional attributes, omitted if empty.
-		Message string            `json:"message"`           // The main log message.
-		Fields  Fields            `json:"fields,omitempty"`  // Custom key-value fields, omitted if empty.
+		Time    string            `json:"time"`               // Timestamp in RFC3339Nano format.
+		Level   string            `json:"level"`              // Log level string (e.g., "INFO").
+		Module  string            `json:"module,omitempty"`   // Module name, omitted if empty.
+		TraceID string            `json:"trace_id,omitempty"` // Trace ID, omitted if empty.
+		FlowID  string            `json:"flow_id,omitempty"`  // Flow ID, omitted if empty.
+		Attrs   map[string]string `json:"attrs,omitempty"`    // Additional attributes, omitted if empty.
+		Message string            `json:"message"`            // The main log message.
+		Fields  Fields            `json:"fields,omitempty"`   // Custom key-value fields, omitted if empty.
 	}
 
 	// Populate the jsonEntry struct from the HookEvent.
 	entry := jsonEntry{
-		Time:    ev.Time.Format(time.RFC3339Nano), // Use high-precision timestamp.
+		Time:    ev.Time.Format(time.RFC3339), // Example: 2024-06-15T14:23:45Z07:00.
 		Level:   ev.Level.String(),
 		Module:  ev.Module,
 		Message: ev.Message,

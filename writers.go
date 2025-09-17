@@ -5,6 +5,7 @@
 // This file implements the core logic for writing formatted log entries to various output destinations,
 // including standard output, standard error, rotation files, and additional custom writers.
 // It incorporates retry/backoff mechanisms and per-writer error statistics to ensure reliable delivery.
+
 package unologger
 
 import (

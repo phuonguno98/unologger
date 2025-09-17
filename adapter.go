@@ -5,6 +5,7 @@
 // This file defines an Adapter that wraps a LoggerWithCtx, allowing external packages
 // or modules to log messages without explicitly passing a context.Context in every call.
 // It supports simplified logging interfaces for easier integration.
+
 package unologger
 
 import "context"

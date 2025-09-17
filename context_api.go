@@ -2,10 +2,11 @@
 // This source code is licensed under the MIT License found in the LICENSE file.
 
 // Package unologger provides a flexible and feature-rich logging library for Go applications.
-// This file offers utility functions for managing and propagating logging-related metadata
-// within a `context.Context`. It allows attaching and retrieving Logger instances,
-// module names, trace IDs, flow IDs, and custom attributes to the context,
-// facilitating context-aware logging throughout an application.
+// This file defines context-related utilities for attaching and retrieving logger instances
+// and metadata (like module names, trace IDs, flow IDs, and additional attributes) from
+// context.Context objects. This enables seamless propagation of logging context across
+// function calls and goroutines.
+
 package unologger
 
 import (
@@ -82,8 +83,8 @@ func EnsureTraceIDCtx(ctx context.Context) context.Context {
 	globalMu.RLock()
 	l := globalLogger
 	globalMu.RUnlock()
-	if l != nil && l.enableOTEL.Load() {
-		if tid := extractOTELTraceID(ctx); tid != "" { // Assuming extractOTELTraceID exists
+	if l != nil && l.enableOTel.Load() {
+		if tid := extractOTelTraceID(ctx); tid != "" { // Assuming extractOTELTraceID exists
 			return context.WithValue(ctx, ctxTraceIDKey, tid)
 		}
 	}

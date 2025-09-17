@@ -44,36 +44,36 @@ func main() {
 	// including log levels, output formats, concurrency, batching, rotation,
 	// data masking rules, and integration points like hooks and OpenTelemetry.
 	cfg := unologger.Config{
-		MinLevel:    unologger.DEBUG, // Set the minimum log level to DEBUG to capture all messages.
-		Timezone:    "Asia/Ho_Chi_Minh", // Specify the timezone for log timestamps.
-		JSON:        false, // Initially set to false for plain text output.
-		Buffer:      1024,  // Size of the internal channel buffer for log entries.
-		Workers:     2,     // Number of goroutines processing log entries concurrently.
-		NonBlocking: true,  // Enable non-blocking enqueue operations to prevent application slowdown.
-		DropOldest:  true,  // If non-blocking and the buffer is full, drop the oldest log entry.
-		Batch:       unologger.BatchConfig{Size: 5, MaxWait: 400 * time.Millisecond}, // Configure batching to reduce I/O.
+		MinLevel:    unologger.DEBUG,                                                                                                        // Set the minimum log level to DEBUG to capture all messages.
+		Timezone:    "Asia/Ho_Chi_Minh",                                                                                                     // Specify the timezone for log timestamps.
+		JSON:        false,                                                                                                                  // Initially set to false for plain text output.
+		Buffer:      1024,                                                                                                                   // Size of the internal channel buffer for log entries.
+		Workers:     2,                                                                                                                      // Number of goroutines processing log entries concurrently.
+		NonBlocking: true,                                                                                                                   // Enable non-blocking enqueue operations to prevent application slowdown.
+		DropOldest:  true,                                                                                                                   // If non-blocking and the buffer is full, drop the oldest log entry.
+		Batch:       unologger.BatchConfig{Size: 5, MaxWait: 400 * time.Millisecond},                                                        // Configure batching to reduce I/O.
 		Retry:       unologger.RetryPolicy{MaxRetries: 2, Backoff: 80 * time.Millisecond, Exponential: true, Jitter: 20 * time.Millisecond}, // Define retry strategy for failed writes.
 		Rotation: unologger.RotationConfig{
-			Enable:     true,            // Enable rotation.
+			Enable:     true,              // Enable rotation.
 			Filename:   "example/app.log", // Base filename for rotated logs.
-			MaxSizeMB:  5,               // Rotate when file size exceeds 5 MB.
-			MaxBackups: 2,               // Keep up to 2 old log files.
-			MaxAge:     7,               // Delete old log files after 7 days.
-			Compress:   true,            // Compress old log files.
+			MaxSizeMB:  5,                 // Rotate when file size exceeds 5 MB.
+			MaxBackups: 2,                 // Keep up to 2 old log files.
+			MaxAge:     7,                 // Delete old log files after 7 days.
+			Compress:   true,              // Compress old log files.
 		},
 		Stdout: os.Stdout, // Direct standard output logs to os.Stdout.
 		Stderr: os.Stderr, // Direct error output logs to os.Stderr.
 		RegexPatternMap: map[string]string{
-			`\b\d{16}\b`:                                       "****MASKED_CARD****",          // Mask 16-digit numbers (e.g., credit card numbers).
+			`\b\d{16}\b`:                                       "****MASKED_CARD****",                  // Mask 16-digit numbers (e.g., credit card numbers).
 			`(?i)authorization:\s*Bearer\s+\S+`:                "authorization: Bearer ****MASKED****", // Mask Bearer tokens in Authorization headers.
-			`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`: "***@masked.email",           // Mask email addresses.
+			`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`: "***@masked.email",                     // Mask email addresses.
 		},
 		JSONFieldRules: []unologger.MaskFieldRule{
 			{Keys: []string{"password", "token", "secret"}, Replacement: "****"},
 		},
 		Hooks:      []unologger.HookFunc{hookPrint, hookSlow},
 		Hook:       unologger.HookConfig{Async: true, Workers: 2, Queue: 1024, Timeout: 200 * time.Millisecond},
-		EnableOTEL: false, // OpenTelemetry integration is initially disabled.
+		EnableOTel: false, // OpenTelemetry integration is initially disabled.
 	}
 	unologger.InitLoggerWithConfig(cfg) // Initialize the global logger with the defined configuration.
 	// Ensure the logger is gracefully closed when the main function exits.
@@ -88,11 +88,11 @@ func main() {
 	// Context allows attaching metadata (like module, trace ID, user ID) to log entries,
 	// which is crucial for tracing and debugging in distributed systems.
 	ctx := context.Background()
-	ctx = unologger.WithModule(ctx, "main-service").Context() // Attach a module name to the context.
-	ctx = unologger.WithFlowID(ctx, "flow-001")               // Attach a custom flow ID.
+	ctx = unologger.WithModule(ctx, "main-service").Context()           // Attach a module name to the context.
+	ctx = unologger.WithFlowID(ctx, "flow-001")                         // Attach a custom flow ID.
 	ctx = unologger.WithAttrs(ctx, unologger.Fields{"user_id": "u001"}) // Attach custom key-value attributes.
-	ctx = unologger.EnsureTraceIDCtx(ctx)                     // Ensure a trace ID is present in the context (generates one if missing).
-	log := unologger.GetLogger(ctx)                           // Retrieve a logger instance bound to the current context.
+	ctx = unologger.EnsureTraceIDCtx(ctx)                               // Ensure a trace ID is present in the context (generates one if missing).
+	log := unologger.GetLogger(ctx)                                     // Retrieve a logger instance bound to the current context.
 
 	// 3) Demonstrating logging at various levels and text masking in action.
 	// The configured regex and field masking rules will automatically apply to these messages.
@@ -118,9 +118,9 @@ func main() {
 
 	// 6) Adding an extra writer and dynamically changing logger outputs.
 	// This shows how logs can be directed to multiple destinations simultaneously.
-	tmpFile, _ := os.CreateTemp("", "extra-log-*.log") // Create a temporary file for an extra writer.
-	unologger.GlobalLogger().AddExtraWriter("tempfile", tmpFile) // Add the temporary file as an additional log destination.
-	memBuf := &bytes.Buffer{} // Create an in-memory buffer to capture logs.
+	tmpFile, _ := os.CreateTemp("", "extra-log-*.log")                                      // Create a temporary file for an extra writer.
+	unologger.GlobalLogger().AddExtraWriter("tempfile", tmpFile)                            // Add the temporary file as an additional log destination.
+	memBuf := &bytes.Buffer{}                                                               // Create an in-memory buffer to capture logs.
 	unologger.GlobalLogger().SetOutputs(nil, nil, []io.Writer{memBuf}, []string{"mem-buf"}) // Redirect logs to memBuf (and other existing writers).
 	log.Info("Logging in parallel: stdout/stderr, rotation, tempfile, and mem-buf.")
 

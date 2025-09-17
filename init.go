@@ -4,6 +4,7 @@
 // Package unologger provides a flexible and feature-rich logging library for Go applications.
 // This file handles the initialization of the global logger and provides functions
 // for creating detached logger instances.
+
 package unologger
 
 import (
@@ -30,7 +31,7 @@ func InitLogger(minLevel Level, timezone string) {
 		workers:     1,
 		nonBlocking: false,
 		dropOldest:  false,
-		batchSize:   1, // Legacy batch size
+		batchSize:   1,           // Legacy batch size
 		batchWait:   time.Second, // Legacy batch wait
 		retryPolicy: RetryPolicy{},
 		minLevel:    atomicLevel{},
@@ -127,7 +128,7 @@ func newLoggerFromConfig(cfg Config) *Logger {
 		workers:        cfg.Workers,
 		nonBlocking:    cfg.NonBlocking,
 		dropOldest:     cfg.DropOldest,
-		batchSize:      cfg.Batch.Size, // Legacy batch size
+		batchSize:      cfg.Batch.Size,    // Legacy batch size
 		batchWait:      cfg.Batch.MaxWait, // Legacy batch wait
 		retryPolicy:    cfg.Retry,
 		hooks:          cfg.Hooks,
@@ -141,8 +142,8 @@ func newLoggerFromConfig(cfg Config) *Logger {
 		hookErrMax:     defaultHookErrMax,
 	}
 	// Apply JSON and OTEL flags atomically
-	l.jsonFmtFlag.Store(cfg.JSON)       // Corrected: pass bool directly
-	l.enableOTEL.Store(cfg.EnableOTEL) // Corrected: pass bool directly
+	l.jsonFmtFlag.Store(cfg.JSON)      // Corrected: pass bool directly
+	l.enableOTel.Store(cfg.EnableOTel) // Corrected: pass bool directly
 
 	l.batchSizeA.Store(int64(cfg.Batch.Size))
 	l.batchWaitA.Store(int64(cfg.Batch.MaxWait))

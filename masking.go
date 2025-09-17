@@ -8,14 +8,15 @@
 //   - Field-level JSON masking: Masks specific fields within JSON log structures.
 // The goal is to prevent sensitive information (e.g., credit card numbers, emails, tokens, passwords)
 // from being written directly into logs, enhancing security and compliance.
+
 package unologger
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"os"
+	"regexp"
 )
 
 // applyMasking applies configured masking rules to a log message.
