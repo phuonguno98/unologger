@@ -59,7 +59,7 @@ func AttachOTELTrace(ctx context.Context) context.Context {
 	ctx = WithTraceID(ctx, tid)
 	if sid != "" {
 		// Lưu span_id như một attr để hook hoặc writer có thể sử dụng
-		ctx = WithAttrs(ctx, map[string]string{"span_id": sid})
+		ctx = WithAttrs(ctx, Fields{"span_id": sid})
 	}
 	return ctx
 }

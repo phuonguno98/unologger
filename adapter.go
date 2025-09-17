@@ -74,7 +74,7 @@ func (a *Adapter) WithFlowID(flowID string) *Adapter {
 
 // WithAttrs trả về Adapter mới gắn thêm attributes vào context.
 // Nếu trùng key, giá trị mới sẽ ghi đè.
-func (a *Adapter) WithAttrs(attrs map[string]string) *Adapter {
+func (a *Adapter) WithAttrs(attrs Fields) *Adapter {
 	return a.WithContext(WithAttrs(a.lw.ctx, attrs))
 }
 

@@ -73,7 +73,7 @@ func main() {
 	ctx := context.Background()
 	ctx = unologger.WithModule(ctx, "main-service").Context()
 	ctx = unologger.WithFlowID(ctx, "flow-001")
-	ctx = unologger.WithAttrs(ctx, map[string]string{"user_id": "u001"})
+	ctx = unologger.WithAttrs(ctx, unologger.Fields{"user_id": "u001"})
 	ctx = unologger.EnsureTraceIDCtx(ctx)
 	log := unologger.GetLogger(ctx)
 

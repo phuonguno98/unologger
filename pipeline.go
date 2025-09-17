@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const ctxFieldsKey ctxKey = "fields"
+
 // enqueue đưa logEntry vào channel theo cấu hình NonBlocking/DropOldest.
 func (l *Logger) enqueue(e *logEntry) {
 	if l.closed.IsTrue() {
@@ -170,7 +172,16 @@ func (l *Logger) processTextEntry(e *logEntry) {
 	module, _ := e.ctx.Value(ctxModuleKey).(string)
 	traceID, _ := e.ctx.Value(ctxTraceIDKey).(string)
 	flowID, _ := e.ctx.Value(ctxFlowIDKey).(string)
-	attrs, _ := e.ctx.Value(ctxAttrsKey).(map[string]string)
+
+	// Lấy fields từ context và merge với fields của entry
+	ctxFields, _ := e.ctx.Value(ctxFieldsKey).(Fields)
+	mergedFields := make(Fields)
+	for k, v := range ctxFields {
+		mergedFields[k] = v
+	}
+	for k, v := range e.fields {
+		mergedFields[k] = v
+	}
 
 	msg := fmt.Sprintf(e.tmpl, e.args...)
 	msg = l.applyMasking(msg, false)
@@ -182,7 +193,8 @@ func (l *Logger) processTextEntry(e *logEntry) {
 		Message:  msg,
 		TraceID:  traceID,
 		FlowID:   flowID,
-		Attrs:    attrs,
+		Attrs:    nil,          // Attrs không còn được sử dụng trực tiếp
+		Fields:   mergedFields, // Sử dụng mergedFields
 		JSONMode: false,
 	}
 	l.enqueueHook(hookEv)
@@ -201,12 +213,8 @@ func (l *Logger) processTextEntry(e *logEntry) {
 	if flowID != "" {
 		meta += fmt.Sprintf(" flow=%s", flowID)
 	}
-	if len(attrs) > 0 {
-		meta += fmt.Sprintf(" attrs=%v", attrs)
-	}
-
-	if len(e.fields) > 0 {
-		meta += fmt.Sprintf(" fields=%v", e.fields)
+	if len(mergedFields) > 0 {
+		meta += fmt.Sprintf(" fields=%v", mergedFields)
 	}
 
 	line := fmt.Sprintf("%s [%s] (%s)%s %s\n", ts, e.lvl.String(), module, meta, msg)
@@ -226,7 +234,16 @@ func (l *Logger) formatJSONEntry(e *logEntry) []byte {
 	module, _ := e.ctx.Value(ctxModuleKey).(string)
 	traceID, _ := e.ctx.Value(ctxTraceIDKey).(string)
 	flowID, _ := e.ctx.Value(ctxFlowIDKey).(string)
-	attrs, _ := e.ctx.Value(ctxAttrsKey).(map[string]string)
+
+	// Lấy fields từ context và merge với fields của entry
+	ctxFields, _ := e.ctx.Value(ctxFieldsKey).(Fields)
+	mergedFields := make(Fields)
+	for k, v := range ctxFields {
+		mergedFields[k] = v
+	}
+	for k, v := range e.fields {
+		mergedFields[k] = v
+	}
 
 	msg := fmt.Sprintf(e.tmpl, e.args...)
 	msg = l.applyMasking(msg, true)
@@ -238,8 +255,8 @@ func (l *Logger) formatJSONEntry(e *logEntry) []byte {
 		Message:  msg,
 		TraceID:  traceID,
 		FlowID:   flowID,
-		Attrs:    attrs,
-		Fields:   e.fields, // NEW: Thêm fields vào HookEvent
+		Attrs:    nil,          // Attrs không còn được sử dụng trực tiếp
+		Fields:   mergedFields, // Sử dụng mergedFields
 		JSONMode: true,
 	}
 	l.enqueueHook(hookEv)
@@ -262,7 +279,7 @@ func (l *Logger) formatJSONEntry(e *logEntry) []byte {
 		Level:   e.lvl.String(),
 		Module:  module,
 		Message: msg,
-		Fields:  e.fields, // NEW: Gán fields
+		Fields:  mergedFields, // NEW: Gán mergedFields
 	}
 
 	if l.enableOTEL.Load() {
@@ -275,9 +292,6 @@ func (l *Logger) formatJSONEntry(e *logEntry) []byte {
 
 	if flowID != "" {
 		entry.FlowID = flowID
-	}
-	if len(attrs) > 0 {
-		entry.Attrs = attrs
 	}
 
 	b, _ := json.Marshal(entry)

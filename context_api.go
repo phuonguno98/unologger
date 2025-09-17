@@ -44,19 +44,19 @@ func WithFlowID(ctx context.Context, flowID string) context.Context {
 }
 
 // WithAttrs gắn thêm attributes vào ctx; trùng key sẽ ghi đè.
-func WithAttrs(ctx context.Context, attrs map[string]string) context.Context {
+func WithAttrs(ctx context.Context, attrs Fields) context.Context {
 	if attrs == nil {
 		return ctx
 	}
-	existing, _ := ctx.Value(ctxAttrsKey).(map[string]string)
-	newMap := make(map[string]string, len(existing)+len(attrs))
+	existing, _ := ctx.Value(ctxFieldsKey).(Fields)
+	newMap := make(Fields, len(existing)+len(attrs))
 	for k, v := range existing {
 		newMap[k] = v
 	}
 	for k, v := range attrs {
 		newMap[k] = v
 	}
-	return context.WithValue(ctx, ctxAttrsKey, newMap)
+	return context.WithValue(ctx, ctxFieldsKey, newMap)
 }
 
 // EnsureTraceIDCtx đảm bảo ctx có trace_id; ưu tiên lấy từ OpenTelemetry khi được bật.
