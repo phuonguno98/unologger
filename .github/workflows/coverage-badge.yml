@@ -1,0 +1,60 @@
+name: Coverage Badge
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Run tests with coverage
+        run: go test -coverprofile=coverage.out ./...
+
+      - name: Ensure badges directory
+        run: mkdir -p .github/badges
+
+      - name: Generate coverage badge (SVG)
+        shell: bash
+        run: |
+          pct=$(go tool cover -func=coverage.out | awk '/total:/ {print $3}')
+          pct_num=${pct%%%}
+          color=red
+          # So sánh ngưỡng đơn giản theo số nguyên
+          pct_int=${pct_num%.*}
+          if [ "$pct_int" -ge 80 ]; then color=green; elif [ "$pct_int" -ge 60 ]; then color=yellow; fi
+          cat > .github/badges/coverage.svg << 'EOF'
+          <svg xmlns="http://www.w3.org/2000/svg" width="140" height="20" role="img" aria-label="coverage">
+            <linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>
+            <rect rx="3" width="140" height="20" fill="#555"/>
+            <rect rx="3" x="70" width="70" height="20" fill="COLOR"/>
+            <path fill="COLOR" d="M70 0h4v20h-4z"/>
+            <rect rx="3" width="140" height="20" fill="url(#s)"/>
+            <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
+              <text x="35" y="14">coverage</text>
+              <text x="105" y="14">PERCENT</text>
+            </g>
+          </svg>
+          EOF
+          # Replace placeholders
+          sed -i "s/COLOR/$color/g" .github/badges/coverage.svg
+          sed -i "s/PERCENT/$pct/g" .github/badges/coverage.svg
+
+      - name: Commit badge
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: update coverage badge'
+          file_pattern: .github/badges/coverage.svg

@@ -117,5 +117,5 @@ func (a *Adapter) Error(format string, args ...interface{}) {
 // Fatal logs a message at FATAL level and then terminates the application by calling os.Exit(1).
 // It uses the adapter's embedded context.
 func (a *Adapter) Fatal(format string, args ...interface{}) {
-	a.lw.Fatal(format, args, nil)
+	a.lw.Fatal(format, args...)
 }

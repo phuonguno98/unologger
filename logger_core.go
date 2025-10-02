@@ -78,6 +78,10 @@ func (l *Logger) log(ctx context.Context, level Level, format string, args ...in
 	// Acquire a log entry from the pool.
 	entry := poolEntry.Get().(*logEntry)
 	entry.lvl = level
+	// Attach OTel trace/span IDs automatically if enabled to improve correlation.
+	if l.enableOTel.Load() {
+		ctx = AttachOTelTrace(ctx)
+	}
 	entry.ctx = ctx
 	entry.t = time.Now()
 	entry.tmpl = format

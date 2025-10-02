@@ -1,0 +1,53 @@
+run:
+  timeout: 5m
+  issues-exit-code: 1
+  tests: true
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - revive
+    - staticcheck
+    - govet
+    - ineffassign
+    - typecheck
+    - unused
+    - gofmt
+    - goimports
+  disable:
+    - depguard
+    - forbidigo
+
+linters-settings:
+  errcheck:
+    # Cho phép bỏ qua một số lỗi ghi log/đóng khi đã xử lý theo counters riêng.
+    check-blank: false
+    ignore: io.Copy,fmt.Fprintf
+  revive:
+    severity: warning
+    rules:
+      - name: exported
+        arguments: ["var, const, func, type"]
+      - name: if-return
+      - name: increment-decrement
+      - name: receiver-naming
+  govet:
+    enable:
+      - shadow
+  gofmt:
+    simplify: true
+
+issues:
+  exclude-use-default: false
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+    - path: example/
+      linters:
+        - errcheck
+        - revive
+    - linters:
+        - gofmt
+      text: "File is not `gofmt`-ed"

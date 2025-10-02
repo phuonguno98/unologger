@@ -122,16 +122,51 @@ func closeLogger(l *Logger, timeout time.Duration) error {
 
 // incWriterErr is a thread-safe method to increment the error count for a specific writer.
 func (l *Logger) incWriterErr(name string) {
-	// This is a common pattern for incrementing a value in a sync.Map.
-	val, _ := l.writerErrs.LoadOrStore(name, int64(0))
-	l.writerErrs.Store(name, val.(int64)+1)
+	// Use an atomic counter per writer to avoid lost updates under contention.
+	// Store *atomicI64 in the map and increment atomically.
+	if c, ok := l.writerErrs.Load(name); ok {
+		switch v := c.(type) {
+		case *atomicI64:
+			v.Add(1)
+			return
+		case int64:
+			// Backward compatibility in case an int64 was stored previously.
+			// Replace with an atomic counter initialized to v+1.
+			ai := &atomicI64{}
+			ai.Store(v + 1)
+			l.writerErrs.Store(name, ai)
+			return
+		}
+	}
+	// Not present: create a new atomic counter starting at 1.
+	ai := &atomicI64{}
+	ai.Store(1)
+	if prev, loaded := l.writerErrs.LoadOrStore(name, ai); loaded {
+		// Another goroutine beat us; increment that one.
+		if p, ok := prev.(*atomicI64); ok {
+			p.Add(1)
+		} else if iv, ok := prev.(int64); ok {
+			tmp := &atomicI64{}
+			tmp.Store(iv + 1)
+			l.writerErrs.Store(name, tmp)
+		}
+	}
 }
 
 // getWriterErrorStats safely retrieves a snapshot of the writer error counts.
 func (l *Logger) getWriterErrorStats() map[string]int64 {
 	stats := make(map[string]int64)
 	l.writerErrs.Range(func(key, value any) bool {
-		stats[key.(string)] = value.(int64)
+		name := key.(string)
+		switch v := value.(type) {
+		case *atomicI64:
+			stats[name] = v.Load()
+		case int64:
+			// Backward compatibility: accept raw int64 values.
+			stats[name] = v
+		default:
+			// Unknown type; ignore.
+		}
 		return true
 	})
 	return stats

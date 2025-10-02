@@ -223,20 +223,21 @@ type HookFunc func(e HookEvent) error
 
 // --- Internal Types ---
 
-// ctxKey is a private type to prevent context key collisions.
-type ctxKey struct{}
+// ctxKey is a private string-based type used for context keys to avoid collisions.
+// Using distinct string values ensures each key is unique while remaining unexported.
+type ctxKey string
 
 var (
 	// ctxLoggerKey is the context key for storing a specific *Logger instance.
-	ctxLoggerKey = ctxKey{}
+	ctxLoggerKey ctxKey = "unologger_logger"
 	// ctxModuleKey is the context key for storing the module name.
-	ctxModuleKey = ctxKey{}
+	ctxModuleKey ctxKey = "unologger_module"
 	// ctxTraceIDKey is the context key for storing the trace ID.
-	ctxTraceIDKey = ctxKey{}
+	ctxTraceIDKey ctxKey = "unologger_trace_id"
 	// ctxFlowIDKey is the context key for storing the flow ID.
-	ctxFlowIDKey = ctxKey{}
+	ctxFlowIDKey ctxKey = "unologger_flow_id"
 	// ctxFieldsKey is the context key for storing contextual attributes (Fields).
-	ctxFieldsKey = ctxKey{}
+	ctxFieldsKey ctxKey = "unologger_fields"
 )
 
 // hookTask is an internal wrapper for passing a hook event to the async worker pool.
@@ -263,16 +264,16 @@ type Logger struct {
 	dropOldest  bool           // If true and non-blocking, drops the oldest entry from `ch`.
 
 	// --- Output & Formatting ---
-	stdOut      io.Writer      // Destination for non-error logs.
-	errOut      io.Writer      // Destination for ERROR and FATAL logs.
-	extraW      []writerSink   // Additional output destinations.
+	stdOut       io.Writer      // Destination for non-error logs.
+	errOut       io.Writer      // Destination for ERROR and FATAL logs.
+	extraW       []writerSink   // Additional output destinations.
 	rotationSink *writerSink    // A special writer for log rotation.
-	outputsMu   sync.RWMutex   // Guards access to all output writers.
-	formatter   Formatter      // Formats a log entry into bytes.
-	loc         *time.Location // Timezone for timestamps.
-	locMu       sync.RWMutex   // Guards access to the timezone location.
-	jsonFmtFlag atomicBool     // Atomic flag for runtime JSON format toggling.
-	formatterMu sync.RWMutex   // Guards access to the formatter.
+	outputsMu    sync.RWMutex   // Guards access to all output writers.
+	formatter    Formatter      // Formats a log entry into bytes.
+	loc          *time.Location // Timezone for timestamps.
+	locMu        sync.RWMutex   // Guards access to the timezone location.
+	jsonFmtFlag  atomicBool     // Atomic flag for runtime JSON format toggling.
+	formatterMu  sync.RWMutex   // Guards access to the formatter.
 
 	// --- Batching ---
 	batchSizeA atomicI64 // Atomic batch size for lock-free reads.
@@ -353,21 +354,21 @@ type DynamicConfig struct {
 // atomicLevel provides atomic operations for the Level type (int32).
 type atomicLevel struct{ v int32 }
 
-func (a *atomicLevel) Load() int32      { return atomic.LoadInt32(&a.v) }
+func (a *atomicLevel) Load() int32     { return atomic.LoadInt32(&a.v) }
 func (a *atomicLevel) Store(val int32) { atomic.StoreInt32(&a.v, val) }
 
 // atomicBool provides atomic operations for a boolean.
 type atomicBool struct{ v uint32 }
 
-func (a *atomicBool) Load() bool         { return atomic.LoadUint32(&a.v) != 0 }
-func (a *atomicBool) Store(val bool)     { atomic.StoreUint32(&a.v, b32(val)) }
-func (a *atomicBool) TrySetTrue() bool   { return atomic.CompareAndSwapUint32(&a.v, 0, 1) }
+func (a *atomicBool) Load() bool       { return atomic.LoadUint32(&a.v) != 0 }
+func (a *atomicBool) Store(val bool)   { atomic.StoreUint32(&a.v, b32(val)) }
+func (a *atomicBool) TrySetTrue() bool { return atomic.CompareAndSwapUint32(&a.v, 0, 1) }
 
 // atomicI64 provides atomic operations for an int64.
 type atomicI64 struct{ v int64 }
 
 func (a *atomicI64) Add(delta int64) { atomic.AddInt64(&a.v, delta) }
-func (a *atomicI64) Load() int64      { return atomic.LoadInt64(&a.v) }
+func (a *atomicI64) Load() int64     { return atomic.LoadInt64(&a.v) }
 func (a *atomicI64) Store(val int64) { atomic.StoreInt64(&a.v, val) }
 
 // b32 converts a boolean to a uint32 (0 or 1).

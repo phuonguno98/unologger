@@ -208,9 +208,9 @@ func (l *Logger) processBatch(entries []*logEntry) {
 		l.enqueueHook(hookEv)
 
 		// Format the final log line.
-		l.formatterMu.RLock() // Acquire read lock
+		l.formatterMu.RLock()    // Acquire read lock
 		formatter := l.formatter // Get the current formatter
-		l.formatterMu.RUnlock() // Release read lock
+		l.formatterMu.RUnlock()  // Release read lock
 
 		b, err := formatter.Format(hookEv)
 		if err != nil {
@@ -220,8 +220,8 @@ func (l *Logger) processBatch(entries []*logEntry) {
 			continue
 		}
 
-		// Write to configured outputs.
-		isErrLevel := e.lvl >= ERROR
+		// Write to configured outputs. WARN and above go to stderr per documentation.
+		isErrLevel := e.lvl >= WARN
 		l.writeToAll(b, isErrLevel)
 		recycleEntry(e)
 	}

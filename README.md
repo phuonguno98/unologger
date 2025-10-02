@@ -1,5 +1,9 @@
 # unologger
 
+![CI](https://github.com/phuonguno98/unologger/actions/workflows/ci.yml/badge.svg)
+![coverage](.github/badges/coverage.svg)
+![lint](https://github.com/phuonguno98/unologger/actions/workflows/lint.yml/badge.svg)
+
 unologger là thư viện logging bất đồng bộ cho Go, tập trung vào hiệu năng, an toàn cạnh tranh và tính linh hoạt khi vận hành. Thư viện hỗ trợ batching, hooks, masking dữ liệu nhạy cảm, xoay file, cấu hình động và tích hợp OpenTelemetry.
 
 ## Tính năng chính
@@ -8,9 +12,9 @@ unologger là thư viện logging bất đồng bộ cho Go, tập trung vào hi
 - Batching bất đồng bộ, non-blocking queue với chính sách `DropOldest`
 - Masking dữ liệu nhạy cảm bằng regex và theo tên field JSON
 - Hooks sync/async với timeout và panic-safe, theo dõi lỗi hook
-- Rotation file log bằng lumberjack, đa writer (stdout, stderr, extras)
+- Rotation file log bằng lumberjack, đa writer (stdout, stderr, extras; WARN/ERROR/FATAL → stderr)
 - Cấu hình động: min-level, batch, retry, hooks, outputs, rotation, JSON mode, timezone
-- Tích hợp OTel: tự động gắn trace/span ID từ context
+- Tích hợp OTel: tự động gắn trace/span ID từ context khi EnableOTel=true
 
 ## An toàn cạnh tranh và tối ưu hiệu năng
 
@@ -172,6 +176,13 @@ adapter.Error("error from external pkg")
 ```bash
 go build -race ./...
 go run -race ./example
+```
+
+## Kiểm thử & Benchmark
+
+```bash
+go test ./...
+go test -bench BenchmarkLogThroughput_NoOp -benchmem
 ```
 
 ## 📄 License
